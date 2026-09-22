@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "map-bundle-collector",
+  "version": "${version}",
+  "name": "Map Bundle Collector",
+  "description": "Collects matching filled maps into inventory bundles from a manually opened container.",
+  "authors": ["tysonsxz"],
+  "environment": "client",
+  "entrypoints": {
+    "meteor": ["dev.mapbundlecollector.MapBundleCollectorAddon"]
+  },
+  "mixins": [
+    "map-bundle-collector.mixins.json"
+  ],
+  "custom": {
+    "meteor-client:color": "82,156,255",
+    "modmenu": { "parent": { "id": "meteor-client" } }
+  },
+  "depends": {
+    "java": ">=21",
+    "minecraft": "~${minecraft_version}",
+    "fabricloader": ">=0.18.2",
+    "meteor-client": "*"
+  }
+}

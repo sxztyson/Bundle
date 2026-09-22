@@ -1,0 +1,25 @@
+=======================================================
+ Map Bundle Collector - Meteor Client Addon
+ Made by tysonsxz
+=======================================================
+
+Requirements:
+- Minecraft: 1.21.11
+- Fabric Loader: >= 0.18.2
+- Meteor Client for 1.21.11
+- Java 21+
+
+Installation Instructions:
+1. Make sure you have Fabric Loader and Meteor Client installed for Minecraft 1.21.11.
+2. Press Win + R, type `%appdata%\.minecraft\mods` and hit Enter (or navigate to your instance's mods folder).
+3. Copy `map-bundle-collector-1.0.0.jar` into your `mods` folder.
+4. Launch Minecraft!
+
+Features included:
+- Map Bundle Collector: Automatically moves matching filled maps from opened chests/containers into bundles in your inventory.
+- Map Art Viewer: Previews multi-part map art directly from bundles in your inventory with custom side panel preview and missing tile detection.
+
+Screenshots:
+- Check out the `screenshots/` folder for previews of the inventory side-widget and full-screen map viewer!
+=======================================================
+
