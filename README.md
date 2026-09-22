@@ -1,7 +1,7 @@
 # Bundle - Map Bundle Collector & Map Art Viewer
 **Made by tysonsxz**
 
-A privacy-focused Meteor Client addon for Fabric / Minecraft 1.21.11.
+A privacy-focused Meteor Client addon for Fabric / Minecraft 26.2.
 
 ---
 
@@ -27,15 +27,15 @@ Interactive full-screen viewer with zoom, panning, centering, grid toggling, fli
 ---
 
 ## ⚙️ Requirements
-- **Minecraft**: `1.21.11`
-- **Fabric Loader**: `>= 0.18.2`
-- **Meteor Client**: for 1.21.11
-- **Java**: 21+
+- **Minecraft**: `26.2`
+- **Fabric Loader**: `>= 0.19.4`
+- **Meteor Client**: for 26.2
+- **Java**: 25+
 
 ---
 
 ## 🚀 How to Install
-1. Make sure you have **Fabric Loader** and **Meteor Client** installed for Minecraft 1.21.11.
+1. Make sure you have **Fabric Loader** and **Meteor Client** installed for Minecraft 26.2.
 2. Press `Win + R`, type `%appdata%\.minecraft\mods` and hit Enter.
 3. Place `map-bundle-collector-1.0.0.jar` (found in the [`share/`](share/) folder or `build/libs/`) into your `mods` folder.
 4. Launch Minecraft!

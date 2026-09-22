@@ -17,9 +17,9 @@
     "modmenu": { "parent": { "id": "meteor-client" } }
   },
   "depends": {
-    "java": ">=21",
-    "minecraft": "~${minecraft_version}",
-    "fabricloader": ">=0.18.2",
+    "java": ">=25",
+    "minecraft": "~26.2",
+    "fabricloader": ">=0.19.3",
     "meteor-client": "*"
   }
 }
