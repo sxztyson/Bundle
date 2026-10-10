@@ -6,4 +6,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = "map-bundle-collector"
+rootProject.name = "bundle-sorter"

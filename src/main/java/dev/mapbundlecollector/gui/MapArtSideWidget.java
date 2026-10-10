@@ -4,28 +4,28 @@ import dev.mapbundlecollector.mapart.MapArtManager;
 import dev.mapbundlecollector.mapart.MapArtSet;
 import dev.mapbundlecollector.modules.MapArtViewerModule;
 import meteordevelopment.meteorclient.systems.modules.Modules;
-import meteordevelopment.meteorclient.utils.player.ChatUtils;
-import net.minecraft.ChatFormatting;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.Font;
-import net.minecraft.client.gui.GuiGraphicsExtractor;
-import net.minecraft.client.gui.components.Renderable;
-import net.minecraft.client.gui.components.events.GuiEventListener;
-import net.minecraft.client.gui.narration.NarratableEntry;
-import net.minecraft.client.gui.narration.NarrationElementOutput;
-import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.input.KeyEvent;
-import net.minecraft.client.input.MouseButtonEvent;
-import net.minecraft.client.resources.sounds.SimpleSoundInstance;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.Identifier;
-import net.minecraft.sounds.SoundEvents;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.font.TextRenderer;
+import net.minecraft.client.gl.RenderPipelines;
+import net.minecraft.client.gui.Click;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.Drawable;
+import net.minecraft.client.gui.Element;
+import net.minecraft.client.gui.Selectable;
+import net.minecraft.client.gui.navigation.GuiNavigation;
+import net.minecraft.client.gui.navigation.GuiNavigationPath;
+import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.screen.narration.NarrationMessageBuilder;
+import net.minecraft.client.input.KeyInput;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
+import net.minecraft.util.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
 import java.util.List;
 
-public final class MapArtSideWidget implements Renderable, GuiEventListener, NarratableEntry {
+public final class MapArtSideWidget implements Drawable, Element, Selectable {
     private final Screen parentScreen;
     private int screenX;
     private int screenY;
@@ -75,7 +75,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
     }
 
     @Override
-    public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta) {
+    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
         MapArtViewerModule module = Modules.get().get(MapArtViewerModule.class);
         if (module == null || !module.isActive() || !module.sidePanel.get()) return;
 
@@ -83,38 +83,128 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         if (!manager.hasValidMapArt()) return;
 
         MapArtSet set = manager.getActiveSet();
-        if (set == null) return;
-
         Identifier texId = manager.getTextureId();
-        if (texId == null) return;
+        if (set == null || texId == null) return;
 
-        Minecraft mc = Minecraft.getInstance();
-        Font font = mc.font;
+        MinecraftClient mc = MinecraftClient.getInstance();
+        TextRenderer textRenderer = mc.textRenderer;
 
-        float aspect = (float) set.getRows() / (float) set.getCols();
-
+        // Calculate available space on both sides
         int spaceRight = parentScreen.width - (screenX + backgroundWidth);
         int spaceLeft = screenX;
-        int spaceTop = screenY;
 
-        MapArtViewerModule.DisplayMode displayMode = module.displayMode.get();
-        boolean forceTop = (displayMode == MapArtViewerModule.DisplayMode.TopBadge);
-        boolean forceSide = (displayMode == MapArtViewerModule.DisplayMode.SideCard);
+        // Aspect ratio of the map (cols x rows)
+        int texW = manager.getTextureWidth();
+        int texH = manager.getTextureHeight();
+        float aspect = (float) texH / (float) Math.max(1, texW);
 
-        if (forceTop || (!forceSide && spaceRight < 90 && spaceLeft < 90)) {
+        MapArtViewerModule.DisplayMode dMode = module.displayMode.get();
+        boolean forceTop = (dMode == MapArtViewerModule.DisplayMode.TopBadge);
+        boolean smartUseTop = (dMode == MapArtViewerModule.DisplayMode.Smart && spaceRight < 95);
+
+        int projectCount = manager.getProjectCount();
+        int currentIndex = manager.getCurrentProjectIndex() + 1;
+
+        if (forceTop || smartUseTop) {
+            // Render as an elegant Top Banner above the inventory GUI - never overlaps slots!
             isTopBadgeMode = true;
-            renderTopBadge(graphics, font, set, manager, module, mouseX, mouseY, spaceTop);
+            widgetX = screenX;
+            widgetY = Math.max(2, screenY - 24);
+            widgetWidth = backgroundWidth;
+            widgetHeight = 22;
+
+            btnX = widgetX;
+            btnY = widgetY;
+            btnW = widgetWidth;
+            btnH = widgetHeight;
+
+            boolean hover = mouseX >= btnX && mouseX < btnX + btnW && mouseY >= btnY && mouseY < btnY + btnH;
+            int bg = hover ? 0xEE273B5E : 0xF0151820;
+            int border = hover ? 0xFF5C94F0 : 0xFF2D323E;
+
+            context.fill(btnX, btnY, btnX + btnW, btnY + btnH, bg);
+            context.drawStrokedRectangle(btnX, btnY, btnW, btnH, border);
+
+            // Title
+            String title = set.getProjectId();
+            if (textRenderer.getWidth(title) > 70) {
+                title = textRenderer.trimToWidth(title, 65) + "..";
+            }
+            context.drawTextWithShadow(textRenderer, "🗺 " + title, btnX + 5, btnY + 7, 0xFFFFFFFF);
+
+            // Dimension (Cols x Rows)
+            String sub = set.getCols() + "x" + set.getRows();
+            int subColor = set.isComplete() ? 0xFF55FF55 : 0xFFFFAA00;
+            context.drawTextWithShadow(textRenderer, sub, btnX + 80, btnY + 7, subColor);
+
+            // Arrow buttons if multiple maps exist
+            if (projectCount > 1) {
+                prevW = 12; prevH = 12;
+                prevX = btnX + 112;
+                prevY = btnY + 5;
+
+                nextW = 12; nextH = 12;
+                nextX = btnX + 148;
+                nextY = btnY + 5;
+
+                boolean prevHov = mouseX >= prevX && mouseX < prevX + prevW && mouseY >= prevY && mouseY < prevY + prevH;
+                boolean nextHov = mouseX >= nextX && mouseX < nextX + nextW && mouseY >= nextY && mouseY < nextY + nextH;
+
+                context.fill(prevX, prevY, prevX + prevW, prevY + prevH, prevHov ? 0xFF4A6DA7 : 0xFF2D3648);
+                context.fill(nextX, nextY, nextX + nextW, nextY + nextH, nextHov ? 0xFF4A6DA7 : 0xFF2D3648);
+
+                context.drawCenteredTextWithShadow(textRenderer, "◀", prevX + prevW / 2, prevY + 2, 0xFFFFFFFF);
+                context.drawCenteredTextWithShadow(textRenderer, currentIndex + "/" + projectCount, prevX + 24, prevY + 2, 0xFFAAAAAA);
+                context.drawCenteredTextWithShadow(textRenderer, "▶", nextX + nextW / 2, nextY + 2, 0xFFFFFFFF);
+            }
+
+            // Render button prompt
+            String action = "[Render ↗]";
+            int actionW = textRenderer.getWidth(action);
+            int actionX = btnX + btnW - actionW - 5;
+            boolean actionHover = mouseX >= actionX && mouseX < actionX + actionW && mouseY >= btnY + 4 && mouseY < btnY + 18;
+            context.drawTextWithShadow(textRenderer, action, actionX, btnY + 7, actionHover ? 0xFFFFFFFF : 0xFF6CA8FF);
+
+            // Loaded toggle prompt
+            boolean isKeepLoaded = module.keepLoaded.get();
+            String loadedStr = isKeepLoaded ? "[Loaded: ON]" : "[Loaded: OFF]";
+            int loadedStrW = textRenderer.getWidth(loadedStr);
+            topLoadedX = actionX - loadedStrW - 6;
+            topLoadedY = btnY + 4;
+            topLoadedW = loadedStrW + 4;
+            topLoadedH = 14;
+
+            boolean topLoadedHov = mouseX >= topLoadedX && mouseX < topLoadedX + topLoadedW && mouseY >= topLoadedY && mouseY < topLoadedY + topLoadedH;
+            int loadedColor = isKeepLoaded ? (topLoadedHov ? 0xFF80FF80 : 0xFF55FF55) : (topLoadedHov ? 0xFFCCCCCC : 0xFF888888);
+            context.drawTextWithShadow(textRenderer, loadedStr, topLoadedX + 2, btnY + 7, loadedColor);
+
+            // Clear prompt
+            String clearStr = "[Clear]";
+            int clearStrW = textRenderer.getWidth(clearStr);
+            topClearX = topLoadedX - clearStrW - 6;
+            topClearY = btnY + 4;
+            topClearW = clearStrW + 4;
+            topClearH = 14;
+
+            boolean topClearHov = mouseX >= topClearX && mouseX < topClearX + topClearW && mouseY >= topClearY && mouseY < topClearY + topClearH;
+            context.drawTextWithShadow(textRenderer, clearStr, topClearX + 2, btnY + 7, topClearHov ? 0xFFFF7777 : 0xFFAA5555);
+
+            if (topLoadedHov) {
+                renderLoadedTooltip(context, textRenderer, isKeepLoaded, mouseX, mouseY);
+            }
             return;
         }
 
         isTopBadgeMode = false;
 
+        // Side Card Mode: Fit nicely into available space
         int maxAvailableWidth = Math.max(60, spaceRight - 10);
         int pSize = Math.min(module.previewSize.get(), maxAvailableWidth - 16);
 
         int renderMapW = pSize;
         int renderMapH = Math.round(pSize * aspect);
 
+        // Clamp height so it fits within screen height
         int maxH = Math.max(60, parentScreen.height - screenY - 70);
         if (renderMapH > maxH) {
             renderMapH = maxH;
@@ -123,6 +213,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
 
         widgetWidth = Math.max(renderMapW + 16, 90);
 
+        // Position: strictly adjacent to inventory GUI, never inside it
         if (module.position.get() == MapArtViewerModule.Position.Left && spaceLeft >= widgetWidth + 4) {
             widgetX = screenX - widgetWidth - 4;
         } else {
@@ -148,26 +239,28 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         int missingInfoH = (!set.isComplete() && module.showMissing.get()) ? 14 : 0;
         widgetHeight = headerH + renderMapH + missingInfoH + btnH + 16;
 
-        graphics.fill(widgetX, widgetY, widgetX + widgetWidth, widgetY + widgetHeight, 0xF0151820);
-        graphics.outline(widgetX, widgetY, widgetWidth, widgetHeight, 0xFF2D323E);
+        // Container card background
+        context.fill(widgetX, widgetY, widgetX + widgetWidth, widgetY + widgetHeight, 0xF0151820);
+        context.drawStrokedRectangle(widgetX, widgetY, widgetWidth, widgetHeight, 0xFF2D323E);
 
+        // Header: Clear button [✖]
         clearBtnW = 14; clearBtnH = 14;
         clearBtnX = widgetX + widgetWidth - 18;
         clearBtnY = widgetY + 4;
 
         boolean clearHov = mouseX >= clearBtnX - 1 && mouseX < clearBtnX + clearBtnW + 1 && mouseY >= clearBtnY - 1 && mouseY < clearBtnY + clearBtnH + 1;
-        graphics.fill(clearBtnX, clearBtnY, clearBtnX + clearBtnW, clearBtnY + clearBtnH, clearHov ? 0xFF992222 : 0xFF2A2E38);
-        graphics.centeredText(font, "✖", clearBtnX + clearBtnW / 2, clearBtnY + 3, clearHov ? 0xFFFFAAAA : 0xFF888888);
+        context.fill(clearBtnX, clearBtnY, clearBtnX + clearBtnW, clearBtnY + clearBtnH, clearHov ? 0xFF992222 : 0xFF2A2E38);
+        context.drawCenteredTextWithShadow(textRenderer, "✖", clearBtnX + clearBtnW / 2, clearBtnY + 3, clearHov ? 0xFFFFAAAA : 0xFF888888);
 
+        // Header Title
         String rawTitle = set.getProjectId();
-        int projectCount = manager.getProjectCount();
-        int currentIndex = manager.getCurrentProjectIndex() + 1;
         int maxTitleWidth = (projectCount > 1) ? (widgetWidth - 62) : (widgetWidth - 24);
-        if (font.width(rawTitle) > maxTitleWidth) {
-            rawTitle = font.plainSubstrByWidth(rawTitle, maxTitleWidth - 6) + "..";
+        if (textRenderer.getWidth(rawTitle) > maxTitleWidth) {
+            rawTitle = textRenderer.trimToWidth(rawTitle, maxTitleWidth - 6) + "..";
         }
-        graphics.text(font, rawTitle, widgetX + 7, widgetY + 6, 0xFFFFFFFF, true);
+        context.drawTextWithShadow(textRenderer, rawTitle, widgetX + 7, widgetY + 6, 0xFFFFFFFF);
 
+        // Multiple Maps: Arrow buttons in header
         if (projectCount > 1) {
             prevW = 12; prevH = 12;
             nextW = 12; nextH = 12;
@@ -181,20 +274,22 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
             boolean prevHov = mouseX >= prevX && mouseX < prevX + prevW && mouseY >= prevY && mouseY < prevY + prevH;
             boolean nextHov = mouseX >= nextX && mouseX < nextX + nextW && mouseY >= nextY && mouseY < nextY + nextH;
 
-            graphics.fill(prevX, prevY, prevX + prevW, prevY + prevH, prevHov ? 0xFF4A6DA7 : 0xFF28303F);
-            graphics.fill(nextX, nextY, nextX + nextW, nextY + nextH, nextHov ? 0xFF4A6DA7 : 0xFF28303F);
+            context.fill(prevX, prevY, prevX + prevW, prevY + prevH, prevHov ? 0xFF4A6DA7 : 0xFF28303F);
+            context.fill(nextX, nextY, nextX + nextW, nextY + nextH, nextHov ? 0xFF4A6DA7 : 0xFF28303F);
 
-            graphics.centeredText(font, "◀", prevX + prevW / 2, prevY + 2, 0xFFFFFFFF);
-            graphics.centeredText(font, currentIndex + "/" + projectCount, prevX + 16, prevY + 2, 0xFFAAAAAA);
-            graphics.centeredText(font, "▶", nextX + nextW / 2, nextY + 2, 0xFFFFFFFF);
+            context.drawCenteredTextWithShadow(textRenderer, "◀", prevX + prevW / 2, prevY + 2, 0xFFFFFFFF);
+            context.drawCenteredTextWithShadow(textRenderer, currentIndex + "/" + projectCount, prevX + 16, prevY + 2, 0xFFAAAAAA);
+            context.drawCenteredTextWithShadow(textRenderer, "▶", nextX + nextW / 2, nextY + 2, 0xFFFFFFFF);
         } else {
             prevW = 0; nextW = 0;
         }
 
+        // Completion subtext: Cols x Rows (Width x Height)
         String sub = set.getCols() + "x" + set.getRows() + " • " + set.getPresentCount() + "/" + set.getTotalExpected();
         int subColor = set.isComplete() ? 0xFF55FF55 : 0xFFFFAA00;
-        graphics.text(font, sub, widgetX + 7, widgetY + 17, subColor, true);
+        context.drawTextWithShadow(textRenderer, sub, widgetX + 7, widgetY + 17, subColor);
 
+        // Stitched Map Preview Box
         int mapBoxX = widgetX + 7 + (widgetWidth - 14 - renderMapW) / 2;
         int mapBoxY = widgetY + headerH + 2;
 
@@ -203,19 +298,30 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         lastMapBoxW = renderMapW;
         lastMapBoxH = renderMapH;
 
-        graphics.fill(mapBoxX - 1, mapBoxY - 1, mapBoxX + renderMapW + 1, mapBoxY + renderMapH + 1, 0xFF353945);
+        // Map frame border
+        context.fill(mapBoxX - 1, mapBoxY - 1, mapBoxX + renderMapW + 1, mapBoxY + renderMapH + 1, 0xFF353945);
 
-        graphics.enableScissor(mapBoxX, mapBoxY, mapBoxX + renderMapW, mapBoxY + renderMapH);
+        // Zoomable clipped view
+        context.enableScissor(mapBoxX, mapBoxY, mapBoxX + renderMapW, mapBoxY + renderMapH);
 
         int curDrawW = (int) (renderMapW * previewZoom);
         int curDrawH = (int) (renderMapH * previewZoom);
         int drawX = mapBoxX + (int) previewPanX;
         int drawY = mapBoxY + (int) previewPanY;
 
-        graphics.blit(texId, drawX, drawY, curDrawW, curDrawH, 0.0f, 0.0f, 1.0f, 1.0f);
+        context.drawTexture(
+                RenderPipelines.GUI_TEXTURED,
+                texId,
+                drawX, drawY,
+                0.0f, 0.0f,
+                curDrawW, curDrawH,
+                texW, texH,
+                texW, texH
+        );
 
-        graphics.disableScissor();
+        context.disableScissor();
 
+        // Overlay zoom controls in top-right corner of preview
         zoomInW = 11; zoomInH = 11;
         zoomInX = mapBoxX + renderMapW - 13;
         zoomInY = mapBoxY + 2;
@@ -232,22 +338,23 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         boolean zOutHov = mouseX >= zoomOutX && mouseX < zoomOutX + zoomOutW && mouseY >= zoomOutY && mouseY < zoomOutY + zoomOutH;
         boolean zResHov = mouseX >= zoomResetX && mouseX < zoomResetX + zoomResetW && mouseY >= zoomResetY && mouseY < zoomResetY + zoomResetH;
 
-        graphics.fill(zoomOutX - 2, zoomOutY - 1, zoomInX + zoomInW + 2, zoomInY + zoomInH + 1, 0xCC151820);
+        context.fill(zoomOutX - 2, zoomOutY - 1, zoomInX + zoomInW + 2, zoomInY + zoomInH + 1, 0xCC151820);
 
-        graphics.fill(zoomOutX, zoomOutY, zoomOutX + zoomOutW, zoomOutY + zoomOutH, zOutHov ? 0xFF4A6DA7 : 0xFF282E3B);
-        graphics.centeredText(font, "-", zoomOutX + zoomOutW / 2, zoomOutY + 1, 0xFFFFFFFF);
+        context.fill(zoomOutX, zoomOutY, zoomOutX + zoomOutW, zoomOutY + zoomOutH, zOutHov ? 0xFF4A6DA7 : 0xFF282E3B);
+        context.drawCenteredTextWithShadow(textRenderer, "-", zoomOutX + zoomOutW / 2, zoomOutY + 1, 0xFFFFFFFF);
 
         String zText = Math.round(previewZoom * 100) + "%";
-        graphics.fill(zoomResetX, zoomResetY, zoomResetX + zoomResetW, zoomResetY + zoomResetH, zResHov ? 0xFF4A6DA7 : 0xFF202632);
-        graphics.centeredText(font, zText, zoomResetX + zoomResetW / 2, zoomResetY + 1, (previewZoom != 1.0f) ? 0xFF80FF80 : 0xFFAAAAAA);
+        context.fill(zoomResetX, zoomResetY, zoomResetX + zoomResetW, zoomResetY + zoomResetH, zResHov ? 0xFF4A6DA7 : 0xFF202632);
+        context.drawCenteredTextWithShadow(textRenderer, zText, zoomResetX + zoomResetW / 2, zoomResetY + 1, (previewZoom != 1.0f) ? 0xFF80FF80 : 0xFFAAAAAA);
 
-        graphics.fill(zoomInX, zoomInY, zoomInX + zoomInW, zoomInY + zoomInH, zInHov ? 0xFF4A6DA7 : 0xFF282E3B);
-        graphics.centeredText(font, "+", zoomInX + zoomInW / 2, zoomInY + 1, 0xFFFFFFFF);
+        context.fill(zoomInX, zoomInY, zoomInX + zoomInW, zoomInY + zoomInH, zInHov ? 0xFF4A6DA7 : 0xFF282E3B);
+        context.drawCenteredTextWithShadow(textRenderer, "+", zoomInX + zoomInW / 2, zoomInY + 1, 0xFFFFFFFF);
 
         if (clearHov) {
-            graphics.setComponentTooltipForNextFrame(font, List.of(Component.literal("Clear loaded maps from cache").withStyle(ChatFormatting.RED)), mouseX, mouseY);
+            context.drawTooltip(textRenderer, List.of(Text.literal("Clear loaded maps from cache").formatted(Formatting.RED)), mouseX, mouseY);
         }
 
+        // Missing indicators text
         int currentY = mapBoxY + renderMapH + 4;
         if (!set.isComplete() && module.showMissing.get()) {
             List<int[]> missing = set.getMissingTiles();
@@ -260,10 +367,11 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                 }
                 missText = sb.toString();
             }
-            graphics.text(font, missText, widgetX + 7, currentY, 0xFFFF6666, true);
+            context.drawTextWithShadow(textRenderer, missText, widgetX + 7, currentY, 0xFFFF6666);
             currentY += 14;
         }
 
+        // "Render" button
         btnY = currentY;
         loadedBtnY = currentY;
 
@@ -271,139 +379,46 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         int btnBg = btnHover ? 0xFF3D68B2 : 0xFF2A4373;
         int btnBorder = btnHover ? 0xFF5C94F0 : 0xFF3E60A0;
 
-        graphics.fill(btnX, btnY, btnX + btnW, btnY + btnH, btnBg);
-        graphics.outline(btnX, btnY, btnW, btnH, btnBorder);
+        context.fill(btnX, btnY, btnX + btnW, btnY + btnH, btnBg);
+        context.drawStrokedRectangle(btnX, btnY, btnW, btnH, btnBorder);
 
         String btnLabel = btnW >= 56 ? "Render" : "View";
-        graphics.centeredText(font, btnLabel, btnX + btnW / 2, btnY + 5, 0xFFFFFFFF);
+        context.drawCenteredTextWithShadow(textRenderer, btnLabel, btnX + btnW / 2, btnY + 5, 0xFFFFFFFF);
 
+        // "Loaded" button right next to Render!
         boolean isKeepLoaded = module.keepLoaded.get();
         boolean loadedHover = mouseX >= loadedBtnX && mouseX < loadedBtnX + loadedBtnW && mouseY >= loadedBtnY && mouseY < loadedBtnY + loadedBtnH;
 
         int lBg = isKeepLoaded ? (loadedHover ? 0xFF2B6B38 : 0xFF1D4D26) : (loadedHover ? 0xFF3C414D : 0xFF262932);
         int lBorder = isKeepLoaded ? (loadedHover ? 0xFF5FE072 : 0xFF2F8A43) : (loadedHover ? 0xFF6C7382 : 0xFF3D424E);
 
-        graphics.fill(loadedBtnX, loadedBtnY, loadedBtnX + loadedBtnW, loadedBtnY + loadedBtnH, lBg);
-        graphics.outline(loadedBtnX, loadedBtnY, loadedBtnW, loadedBtnH, lBorder);
+        context.fill(loadedBtnX, loadedBtnY, loadedBtnX + loadedBtnW, loadedBtnY + loadedBtnH, lBg);
+        context.drawStrokedRectangle(loadedBtnX, loadedBtnY, loadedBtnW, loadedBtnH, lBorder);
 
         String loadedLabel = isKeepLoaded ? (loadedBtnW >= 54 ? "Loaded ✓" : "✓ Load") : (loadedBtnW >= 54 ? "Loaded ✕" : "✕ Load");
         int loadedTxtColor = isKeepLoaded ? 0xFF90FF90 : 0xFFAAAAAA;
-        graphics.centeredText(font, loadedLabel, loadedBtnX + loadedBtnW / 2, loadedBtnY + 5, loadedTxtColor);
+        context.drawCenteredTextWithShadow(textRenderer, loadedLabel, loadedBtnX + loadedBtnW / 2, loadedBtnY + 5, loadedTxtColor);
 
         if (loadedHover) {
-            renderLoadedTooltip(graphics, font, isKeepLoaded, mouseX, mouseY);
+            renderLoadedTooltip(context, textRenderer, isKeepLoaded, mouseX, mouseY);
         }
     }
 
-    private void renderTopBadge(GuiGraphicsExtractor graphics, Font font, MapArtSet set, MapArtManager manager, MapArtViewerModule module, int mouseX, int mouseY, int spaceTop) {
-        String title = set.getProjectId();
-        String countText = set.getCols() + "x" + set.getRows() + " (" + set.getPresentCount() + "/" + set.getTotalExpected() + ")";
-
-        int projectCount = manager.getProjectCount();
-        int currentIndex = manager.getCurrentProjectIndex() + 1;
-
-        int arrowsW = (projectCount > 1) ? 52 : 0;
-        int titleW = font.width(title);
-        int countW = font.width(countText);
-        btnW = 56;
-        btnH = 16;
-        topLoadedW = 52;
-        topLoadedH = 16;
-        topClearW = 14;
-        topClearH = 14;
-
-        widgetWidth = titleW + countW + arrowsW + btnW + topLoadedW + topClearW + 42;
-        widgetHeight = 22;
-
-        widgetX = screenX + (backgroundWidth - widgetWidth) / 2;
-        widgetY = Math.max(2, screenY - widgetHeight - 3);
-
-        graphics.fill(widgetX, widgetY, widgetX + widgetWidth, widgetY + widgetHeight, 0xF0151820);
-        graphics.outline(widgetX, widgetY, widgetWidth, widgetHeight, 0xFF2D323E);
-
-        int curX = widgetX + 6;
-
-        topClearX = curX;
-        topClearY = widgetY + 4;
-        boolean clearHov = mouseX >= topClearX - 1 && mouseX < topClearX + topClearW + 1 && mouseY >= topClearY - 1 && mouseY < topClearY + topClearH + 1;
-        graphics.fill(topClearX, topClearY, topClearX + topClearW, topClearY + topClearH, clearHov ? 0xFF992222 : 0xFF2A2E38);
-        graphics.centeredText(font, "✖", topClearX + topClearW / 2, topClearY + 3, clearHov ? 0xFFFFAAAA : 0xFF888888);
-        curX += topClearW + 5;
-
-        graphics.text(font, title, curX, widgetY + 7, 0xFFFFFFFF, true);
-        curX += titleW + 6;
-
-        if (projectCount > 1) {
-            prevW = 12; prevH = 12;
-            nextW = 12; nextH = 12;
-            prevX = curX;
-            prevY = widgetY + 5;
-            nextX = prevX + 36;
-            nextY = widgetY + 5;
-
-            boolean prevHov = mouseX >= prevX && mouseX < prevX + prevW && mouseY >= prevY && mouseY < prevY + prevH;
-            boolean nextHov = mouseX >= nextX && mouseX < nextX + nextW && mouseY >= nextY && mouseY < nextY + nextH;
-
-            graphics.fill(prevX, prevY, prevX + prevW, prevY + prevH, prevHov ? 0xFF4A6DA7 : 0xFF28303F);
-            graphics.fill(nextX, nextY, nextX + nextW, nextY + nextH, nextHov ? 0xFF4A6DA7 : 0xFF28303F);
-
-            graphics.centeredText(font, "◀", prevX + prevW / 2, prevY + 2, 0xFFFFFFFF);
-            graphics.centeredText(font, currentIndex + "/" + projectCount, prevX + 18, prevY + 2, 0xFFAAAAAA);
-            graphics.centeredText(font, "▶", nextX + nextW / 2, nextY + 2, 0xFFFFFFFF);
-
-            curX += arrowsW + 6;
-        }
-
-        int countColor = set.isComplete() ? 0xFF55FF55 : 0xFFFFAA00;
-        graphics.text(font, countText, curX, widgetY + 7, countColor, true);
-        curX += countW + 8;
-
-        btnX = curX;
-        btnY = widgetY + 3;
-        boolean btnHover = mouseX >= btnX && mouseX < btnX + btnW && mouseY >= btnY && mouseY < btnY + btnH;
-        graphics.fill(btnX, btnY, btnX + btnW, btnY + btnH, btnHover ? 0xFF3D68B2 : 0xFF2A4373);
-        graphics.outline(btnX, btnY, btnW, btnH, btnHover ? 0xFF5C94F0 : 0xFF3E60A0);
-        graphics.centeredText(font, "Render", btnX + btnW / 2, btnY + 4, 0xFFFFFFFF);
-        curX += btnW + 4;
-
-        topLoadedX = curX;
-        topLoadedY = widgetY + 3;
-        boolean isKeepLoaded = module.keepLoaded.get();
-        boolean loadedHover = mouseX >= topLoadedX && mouseX < topLoadedX + topLoadedW && mouseY >= topLoadedY && mouseY < topLoadedY + topLoadedH;
-
-        int lBg = isKeepLoaded ? (loadedHover ? 0xFF2B6B38 : 0xFF1D4D26) : (loadedHover ? 0xFF3C414D : 0xFF262932);
-        int lBorder = isKeepLoaded ? (loadedHover ? 0xFF5FE072 : 0xFF2F8A43) : (loadedHover ? 0xFF6C7382 : 0xFF3D424E);
-
-        graphics.fill(topLoadedX, topLoadedY, topLoadedX + topLoadedW, topLoadedY + topLoadedH, lBg);
-        graphics.outline(topLoadedX, topLoadedY, topLoadedW, topLoadedH, lBorder);
-
-        String lText = isKeepLoaded ? "Loaded ✓" : "Loaded ✕";
-        int lColor = isKeepLoaded ? 0xFF90FF90 : 0xFFAAAAAA;
-        graphics.centeredText(font, lText, topLoadedX + topLoadedW / 2, topLoadedY + 4, lColor);
-
-        if (loadedHover) {
-            renderLoadedTooltip(graphics, font, isKeepLoaded, mouseX, mouseY);
-        }
-        if (clearHov) {
-            graphics.setComponentTooltipForNextFrame(font, List.of(Component.literal("Clear loaded maps from cache").withStyle(ChatFormatting.RED)), mouseX, mouseY);
-        }
-    }
-
-    private void renderLoadedTooltip(GuiGraphicsExtractor graphics, Font font, boolean isKeepLoaded, int mouseX, int mouseY) {
-        List<Component> tooltip = new ArrayList<>();
+    private void renderLoadedTooltip(DrawContext context, TextRenderer textRenderer, boolean isKeepLoaded, int mouseX, int mouseY) {
+        List<Text> tooltip = new ArrayList<>();
         if (isKeepLoaded) {
-            tooltip.add(Component.literal("Keep Loaded: ON").withStyle(ChatFormatting.GREEN, ChatFormatting.BOLD));
-            tooltip.add(Component.literal("Maps stay in memory when bundles").withStyle(ChatFormatting.GRAY));
-            tooltip.add(Component.literal("are removed from your inventory.").withStyle(ChatFormatting.GRAY));
-            tooltip.add(Component.literal("Supports huge 50x50 maparts!").withStyle(ChatFormatting.YELLOW));
-            tooltip.add(Component.literal("• Click: Toggle OFF").withStyle(ChatFormatting.WHITE));
-            tooltip.add(Component.literal("• Shift-Click: Clear cache").withStyle(ChatFormatting.RED));
+            tooltip.add(Text.literal("Keep Loaded: ON").formatted(Formatting.GREEN, Formatting.BOLD));
+            tooltip.add(Text.literal("Maps stay in memory when bundles").formatted(Formatting.GRAY));
+            tooltip.add(Text.literal("are removed from your inventory.").formatted(Formatting.GRAY));
+            tooltip.add(Text.literal("Supports huge 50x50 maparts!").formatted(Formatting.YELLOW));
+            tooltip.add(Text.literal("• Click: Toggle OFF").formatted(Formatting.WHITE));
+            tooltip.add(Text.literal("• Shift-Click: Clear cache").formatted(Formatting.RED));
         } else {
-            tooltip.add(Component.literal("Keep Loaded: OFF").withStyle(ChatFormatting.GRAY, ChatFormatting.BOLD));
-            tooltip.add(Component.literal("Only maps in current inventory are shown.").withStyle(ChatFormatting.GRAY));
-            tooltip.add(Component.literal("• Click: Turn ON").withStyle(ChatFormatting.GREEN));
+            tooltip.add(Text.literal("Keep Loaded: OFF").formatted(Formatting.GRAY, Formatting.BOLD));
+            tooltip.add(Text.literal("Only maps in current inventory are shown.").formatted(Formatting.GRAY));
+            tooltip.add(Text.literal("• Click: Turn ON").formatted(Formatting.GREEN));
         }
-        graphics.setComponentTooltipForNextFrame(font, tooltip, mouseX, mouseY);
+        context.drawTooltip(textRenderer, tooltip, mouseX, mouseY);
     }
 
     @Override
@@ -417,45 +432,55 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
     }
 
     @Override
-    public boolean mouseReleased(MouseButtonEvent event) {
+    public boolean isClickable() {
+        return true;
+    }
+
+    @Override
+    public boolean mouseReleased(Click click) {
         return false;
     }
 
     @Override
-    public boolean mouseClicked(MouseButtonEvent event, boolean doubled) {
+    public boolean mouseClicked(Click click, boolean doubled) {
         MapArtViewerModule module = Modules.get().get(MapArtViewerModule.class);
         if (module == null || !module.isActive() || !module.sidePanel.get()) return false;
 
         MapArtManager manager = MapArtManager.get();
         if (!manager.hasValidMapArt()) return false;
 
-        Minecraft mc = Minecraft.getInstance();
-        double mx = event.x();
-        double my = event.y();
-        boolean isShift = (event.modifiers() & GLFW.GLFW_MOD_SHIFT) != 0 || isShiftPressed() || event.button() != 0;
+        MinecraftClient mc = MinecraftClient.getInstance();
+        double mx = click.x();
+        double my = click.y();
+        boolean isShift = click.hasShift() || isShiftPressed() || click.button() != 0;
 
+        // Arrow buttons click handling
         if (manager.getProjectCount() > 1) {
             if (mx >= prevX - 2 && mx < prevX + prevW + 2 && my >= prevY - 2 && my < prevY + prevH + 2) {
                 manager.prevProject();
                 try {
-                    mc.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.1f));
+                    mc.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(
+                        net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.1f));
                 } catch (Exception ignored) {}
                 return true;
             }
             if (mx >= nextX - 2 && mx < nextX + nextW + 2 && my >= nextY - 2 && my < nextY + nextH + 2) {
                 manager.nextProject();
                 try {
-                    mc.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.1f));
+                    mc.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(
+                        net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.1f));
                 } catch (Exception ignored) {}
                 return true;
             }
         }
 
         if (isTopBadgeMode) {
+            // Top Badge: Clear button
             if (mx >= topClearX - 2 && mx < topClearX + topClearW + 2 && my >= topClearY - 2 && my < topClearY + topClearH + 2) {
                 module.clearLoaded();
                 return true;
             }
+            // Top Badge: Loaded toggle / shift-clear
             if (mx >= topLoadedX && mx < topLoadedX + topLoadedW && my >= topLoadedY && my < topLoadedY + topLoadedH) {
                 if (isShift) {
                     module.clearLoaded();
@@ -463,36 +488,39 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                     module.toggleKeepLoaded();
                     if (mc.player != null) {
                         boolean state = module.keepLoaded.get();
-                        ChatUtils.sendMsg("Map Art", Component.literal(
-                            state ? "§aKeep Loaded: §aON§r (maps stay in memory)"
-                                  : "§eKeep Loaded: §cOFF§r (live inventory only)"));
+                        mc.inGameHud.getChatHud().addMessage(Text.literal(
+                            state ? "§a[Map Art]§r Keep Loaded: §aON§r (maps stay in memory)"
+                                  : "§e[Map Art]§r Keep Loaded: §cOFF§r (live inventory only)"));
                         try {
-                            mc.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.2f));
+                            mc.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(
+                                net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.2f));
                         } catch (Exception ignored) {}
                     }
                 }
                 return true;
             }
+            // Top Badge: Render button
             if (mx >= btnX && mx < btnX + btnW && my >= btnY && my < btnY + btnH) {
-                mc.gui.setScreen(new MapArtRenderScreen(parentScreen));
+                mc.setScreen(new MapArtRenderScreen(parentScreen));
                 return true;
             }
             return false;
         }
 
+        // Side Card: Header Clear [✖] button
         if (mx >= clearBtnX - 2 && mx < clearBtnX + clearBtnW + 3 && my >= clearBtnY - 2 && my < clearBtnY + clearBtnH + 3) {
             module.clearLoaded();
             return true;
         }
 
+        // Side Card: Mini Zoom buttons
         if (mx >= zoomInX && mx < zoomInX + zoomInW && my >= zoomInY && my < zoomInY + zoomInH) {
             previewZoom = Math.min(previewZoom + 0.25f, 5.0f);
             return true;
         }
         if (mx >= zoomOutX && mx < zoomOutX + zoomOutW && my >= zoomOutY && my < zoomOutY + zoomOutH) {
             previewZoom = Math.max(previewZoom - 0.25f, 0.5f);
-            if (previewZoom <= 1.05f && previewZoom >= 0.95f) {
-                previewZoom = 1.0f;
+            if (previewZoom <= 1.0f) {
                 previewPanX = 0;
                 previewPanY = 0;
             }
@@ -505,6 +533,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
             return true;
         }
 
+        // Side Card: Loaded toggle button (Shift-click or Right-click clears cache!)
         if (mx >= loadedBtnX && mx < loadedBtnX + loadedBtnW && my >= loadedBtnY && my < loadedBtnY + loadedBtnH) {
             if (isShift) {
                 module.clearLoaded();
@@ -512,40 +541,52 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                 module.toggleKeepLoaded();
                 if (mc.player != null) {
                     boolean state = module.keepLoaded.get();
-                    ChatUtils.sendMsg("Map Art", Component.literal(
-                        state ? "§aKeep Loaded: §aON§r (maps stay in memory)"
-                              : "§eKeep Loaded: §cOFF§r (live inventory only)"));
+                    mc.inGameHud.getChatHud().addMessage(Text.literal(
+                        state ? "§a[Map Art]§r Keep Loaded: §aON§r (maps stay in memory)"
+                              : "§e[Map Art]§r Keep Loaded: §cOFF§r (live inventory only)"));
                     try {
-                        mc.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.2f));
+                        mc.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(
+                            net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.2f));
                     } catch (Exception ignored) {}
                 }
             }
             return true;
         }
 
+        // Side Card: Render button
         if (mx >= btnX && mx < btnX + btnW && my >= btnY && my < btnY + btnH) {
-            mc.gui.setScreen(new MapArtRenderScreen(parentScreen));
+            mc.setScreen(new MapArtRenderScreen(parentScreen));
             return true;
         }
 
+        // Double click on map box resets zoom, single click opens fullscreen viewer
         if (mx >= lastMapBoxX && mx < lastMapBoxX + lastMapBoxW && my >= lastMapBoxY && my < lastMapBoxY + lastMapBoxH) {
-            mc.gui.setScreen(new MapArtRenderScreen(parentScreen));
+            if (doubled) {
+                previewZoom = 1.0f;
+                previewPanX = 0;
+                previewPanY = 0;
+                return true;
+            }
+            mc.setScreen(new MapArtRenderScreen(parentScreen));
             return true;
         }
 
         return false;
     }
 
-    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
         if (mouseX >= lastMapBoxX && mouseX < lastMapBoxX + lastMapBoxW && mouseY >= lastMapBoxY && mouseY < lastMapBoxY + lastMapBoxH) {
             if (verticalAmount > 0) {
                 previewZoom = Math.min(previewZoom + 0.25f, 5.0f);
             } else if (verticalAmount < 0) {
                 previewZoom = Math.max(previewZoom - 0.25f, 0.5f);
+                if (Math.abs(previewZoom - 1.0f) < 0.15f) {
+                    previewZoom = 1.0f;
+                    previewPanX = 0;
+                    previewPanY = 0;
+                }
             }
-            if (previewZoom <= 1.05f && previewZoom >= 0.95f) {
-                previewZoom = 1.0f;
+            if (previewZoom <= 1.0f) {
                 previewPanX = 0;
                 previewPanY = 0;
             }
@@ -554,10 +595,9 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         return false;
     }
 
-    @Override
-    public boolean mouseDragged(MouseButtonEvent event, double offsetX, double offsetY) {
-        double mx = event.x();
-        double my = event.y();
+    public boolean mouseDragged(Click click, double offsetX, double offsetY) {
+        double mx = click.x();
+        double my = click.y();
         if (mx >= lastMapBoxX && mx < lastMapBoxX + lastMapBoxW && my >= lastMapBoxY && my < lastMapBoxY + lastMapBoxH) {
             if (previewZoom > 1.0f) {
                 previewPanX += (float) offsetX;
@@ -569,20 +609,21 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
     }
 
     @Override
-    public boolean keyPressed(KeyEvent event) {
+    public boolean keyPressed(KeyInput input) {
         MapArtManager manager = MapArtManager.get();
         if (!manager.hasValidMapArt()) return false;
 
-        Minecraft mc = Minecraft.getInstance();
-        int k = event.key();
-        boolean isShift = (event.modifiers() & GLFW.GLFW_MOD_SHIFT) != 0 || isShiftPressed();
-        boolean isCtrl = (event.modifiers() & GLFW.GLFW_MOD_CONTROL) != 0;
+        MinecraftClient mc = MinecraftClient.getInstance();
+        int k = input.key();
+        boolean isShift = input.hasShift() || isShiftPressed();
+        boolean isCtrl = input.hasCtrl();
 
-        boolean isLeftKey = k == GLFW.GLFW_KEY_LEFT || k == GLFW.GLFW_KEY_KP_4 || k == GLFW.GLFW_KEY_LEFT_BRACKET;
-        boolean isRightKey = k == GLFW.GLFW_KEY_RIGHT || k == GLFW.GLFW_KEY_KP_6 || k == GLFW.GLFW_KEY_RIGHT_BRACKET;
-        boolean isUpKey = k == GLFW.GLFW_KEY_UP || k == GLFW.GLFW_KEY_KP_8 || k == GLFW.GLFW_KEY_EQUAL || k == GLFW.GLFW_KEY_KP_ADD;
-        boolean isDownKey = k == GLFW.GLFW_KEY_DOWN || k == GLFW.GLFW_KEY_KP_2 || k == GLFW.GLFW_KEY_MINUS || k == GLFW.GLFW_KEY_KP_SUBTRACT;
+        boolean isLeftKey = input.isLeft() || k == GLFW.GLFW_KEY_LEFT || k == GLFW.GLFW_KEY_KP_4 || k == GLFW.GLFW_KEY_LEFT_BRACKET;
+        boolean isRightKey = input.isRight() || k == GLFW.GLFW_KEY_RIGHT || k == GLFW.GLFW_KEY_KP_6 || k == GLFW.GLFW_KEY_RIGHT_BRACKET;
+        boolean isUpKey = input.isUp() || k == GLFW.GLFW_KEY_UP || k == GLFW.GLFW_KEY_KP_8 || k == GLFW.GLFW_KEY_EQUAL || k == GLFW.GLFW_KEY_KP_ADD;
+        boolean isDownKey = input.isDown() || k == GLFW.GLFW_KEY_DOWN || k == GLFW.GLFW_KEY_KP_2 || k == GLFW.GLFW_KEY_MINUS || k == GLFW.GLFW_KEY_KP_SUBTRACT;
 
+        // Left Arrow: Switch project (when multiple), otherwise pan or notify
         if (isLeftKey) {
             if (manager.getProjectCount() > 1 && !isCtrl) {
                 manager.prevProject();
@@ -590,7 +631,8 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                 previewPanX = 0;
                 previewPanY = 0;
                 try {
-                    mc.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.1f));
+                    mc.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(
+                        net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.1f));
                 } catch (Exception ignored) {}
                 return true;
             } else if (previewZoom > 1.0f) {
@@ -600,6 +642,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
             return false;
         }
 
+        // Right Arrow: Switch project (when multiple), otherwise pan or notify
         if (isRightKey) {
             if (manager.getProjectCount() > 1 && !isCtrl) {
                 manager.nextProject();
@@ -607,7 +650,8 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                 previewPanX = 0;
                 previewPanY = 0;
                 try {
-                    mc.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.1f));
+                    mc.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(
+                        net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.1f));
                 } catch (Exception ignored) {}
                 return true;
             } else if (previewZoom > 1.0f) {
@@ -617,6 +661,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
             return false;
         }
 
+        // Tab: Cycle projects when multiple exist
         if (k == GLFW.GLFW_KEY_TAB && manager.getProjectCount() > 1) {
             if (isShift) {
                 manager.prevProject();
@@ -629,6 +674,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
             return true;
         }
 
+        // Up / Down Arrow: Zoom in / Zoom out on preview (or pan if Ctrl is held)
         if (isUpKey) {
             if (previewZoom > 1.0f && isCtrl) {
                 previewPanY += 20f;
@@ -665,16 +711,21 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
     }
 
     @Override
-    public NarrationPriority narrationPriority() {
-        return focused ? NarrationPriority.FOCUSED : NarrationPriority.NONE;
+    public GuiNavigationPath getNavigationPath(GuiNavigation navigation) {
+        return null;
     }
 
     @Override
-    public void updateNarration(NarrationElementOutput output) {
+    public SelectionType getType() {
+        return focused ? SelectionType.FOCUSED : SelectionType.NONE;
+    }
+
+    @Override
+    public void appendNarrations(NarrationMessageBuilder builder) {
     }
 
     private boolean isShiftPressed() {
-        long handle = Minecraft.getInstance().getWindow().handle();
+        long handle = MinecraftClient.getInstance().getWindow().getHandle();
         return GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS ||
                GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
     }

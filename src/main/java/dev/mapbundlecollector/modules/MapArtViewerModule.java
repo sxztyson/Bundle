@@ -9,11 +9,7 @@ import meteordevelopment.meteorclient.settings.IntSetting;
 import meteordevelopment.meteorclient.settings.Setting;
 import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
-import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.client.resources.sounds.SimpleSoundInstance;
-import net.minecraft.network.chat.Component;
-import net.minecraft.sounds.SoundEvents;
 
 public final class MapArtViewerModule extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
@@ -84,9 +80,10 @@ public final class MapArtViewerModule extends Module {
     public void clearLoaded() {
         MapArtManager.get().clear();
         if (mc.player != null) {
-            ChatUtils.sendMsg("Map Art", Component.literal("§c[Map Art]§r Cleared all loaded maps from memory."));
+            mc.inGameHud.getChatHud().addMessage(net.minecraft.text.Text.literal("§c[Map Art]§r Cleared all loaded maps from memory."));
             try {
-                mc.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0f));
+                mc.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(
+                    net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.0f));
             } catch (Exception ignored) {}
         }
     }

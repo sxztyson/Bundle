@@ -1,19 +1,19 @@
 package dev.mapbundlecollector.mapart;
 
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.saveddata.maps.MapId;
-import net.minecraft.world.level.saveddata.maps.MapItemSavedData;
+import net.minecraft.component.type.MapIdComponent;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.map.MapState;
 
 public record MapTile(
     int row,
     int col,
     String originalName,
-    MapId mapId,
+    MapIdComponent mapId,
     ItemStack stack,
-    MapItemSavedData mapState,
+    MapState mapState,
     byte[] cachedColors
 ) {
-    public MapTile(int row, int col, String originalName, MapId mapId, ItemStack stack, MapItemSavedData mapState) {
+    public MapTile(int row, int col, String originalName, MapIdComponent mapId, ItemStack stack, MapState mapState) {
         this(row, col, originalName, mapId, stack, mapState,
              (mapState != null && mapState.colors != null && mapState.colors.length >= 16384) ? mapState.colors.clone() : null);
     }

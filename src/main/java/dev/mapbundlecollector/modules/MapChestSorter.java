@@ -1,0 +1,651 @@
+package dev.mapbundlecollector.modules;
+
+import dev.mapbundlecollector.MapBundleCollectorAddon;
+import dev.mapbundlecollector.mapart.MapArtManager;
+import dev.mapbundlecollector.mapart.MapArtSet;
+import meteordevelopment.meteorclient.events.game.OpenScreenEvent;
+import meteordevelopment.meteorclient.events.world.TickEvent;
+import meteordevelopment.meteorclient.settings.BoolSetting;
+import meteordevelopment.meteorclient.settings.EnumSetting;
+import meteordevelopment.meteorclient.settings.IntSetting;
+import meteordevelopment.meteorclient.settings.Setting;
+import meteordevelopment.meteorclient.settings.SettingGroup;
+import meteordevelopment.meteorclient.settings.StringSetting;
+import meteordevelopment.meteorclient.systems.modules.Module;
+import meteordevelopment.meteorclient.utils.player.ChatUtils;
+import meteordevelopment.orbit.EventHandler;
+import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.screen.ingame.Generic3x3ContainerScreen;
+import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
+import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.client.gui.screen.ingame.HopperScreen;
+import net.minecraft.client.gui.screen.ingame.ShulkerBoxScreen;
+import net.minecraft.client.toast.SystemToast;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.BundleContentsComponent;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.BundleItem;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.network.packet.c2s.play.BundleItemSelectedC2SPacket;
+import net.minecraft.screen.ScreenHandler;
+import net.minecraft.screen.slot.Slot;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.text.Text;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/** Sorts maps from chest/shulker bundles into player inventory bundles with multi-chest resume. */
+public final class MapChestSorter extends Module {
+    private static final Pattern COORDINATE = Pattern.compile("^(.+?)[_\\-\\s,\\[\\(]+(\\d+)[_\\-\\s,xX]+(\\d+)[_\\]\\)]*(?:\\.[a-zA-Z0-9]+)?$");
+    private static final Pattern LAST_COORDINATE = Pattern.compile("^\\s*(?:(.+?)[_\\-\\s,\\[\\(]+)?(\\d+)[_\\-\\s,xX]+(\\d+)[_\\]\\)]*\\s*$");
+
+    private final SettingGroup sgGeneral = settings.getDefaultGroup();
+
+    private final Setting<String> targetMapName = sgGeneral.add(new StringSetting.Builder()
+        .name("target-map-name")
+        .description("Name/prefix of the map art project to sort. If empty, auto-detects or parses from coordinate.")
+        .defaultValue("")
+        .build());
+
+    private final Setting<String> lastMapCoordinate = sgGeneral.add(new StringSetting.Builder()
+        .name("last-map-coordinate")
+        .description("Final coordinate (e.g. 21_15) or full name (e.g. MonaLisa 21_15), or 'auto'.")
+        .defaultValue("21_15")
+        .build());
+
+    private final Setting<GridDirection> gridDirection = sgGeneral.add(new EnumSetting.Builder<GridDirection>()
+        .name("grid-direction")
+        .description("Traversal sequence order (Column_First: 21_15 -> 21_14, Row_First: 21_15 -> 20_15).")
+        .defaultValue(GridDirection.Column_First)
+        .build());
+
+    private final Setting<CoordinateFormat> coordinateFormat = sgGeneral.add(new EnumSetting.Builder<CoordinateFormat>()
+        .name("coordinate-order")
+        .description("How the two numbers in each map name are interpreted.")
+        .defaultValue(CoordinateFormat.X_Y)
+        .build());
+
+    private final Setting<OutputOrder> outputOrder = sgGeneral.add(new EnumSetting.Builder<OutputOrder>()
+        .name("output-order")
+        .description("Order to fetch maps (LastToFirst starts at 21_15, FirstToLast starts at 0_0).")
+        .defaultValue(OutputOrder.LastToFirst)
+        .build());
+
+    private final Setting<Integer> actionDelay = sgGeneral.add(new IntSetting.Builder()
+        .name("action-delay")
+        .description("Delay in milliseconds between actions.")
+        .defaultValue(150)
+        .min(50)
+        .sliderMax(1000)
+        .build());
+
+    private final Setting<Boolean> localNotifications = sgGeneral.add(new BoolSetting.Builder()
+        .name("local-notifications")
+        .description("Show chat and toast status and completion notices.")
+        .defaultValue(true)
+        .build());
+
+    private State state = State.WAIT_FOR_CONTAINER;
+    private HandledScreen<?> activeScreen;
+    private ScreenHandler menu;
+
+    private List<TargetCoord> targetQueue = new ArrayList<>();
+    private int currentProgressIndex = 0;
+    private String detectedProject = null;
+
+    private int currentSourceSlot = -1;
+    private int currentDestinationSlot = -1;
+    private int destinationCountBefore = 0;
+    private boolean isSourceLooseMap = false;
+
+    private long nextActionAt;
+    private long verifyDeadline;
+    private TargetCoord currentTarget;
+
+    public MapChestSorter() {
+        super(MapBundleCollectorAddon.CATEGORY, "map-chest-sorter", "Sorts maps from chests/shulkers into inventory bundles across containers.");
+    }
+
+    @Override
+    public void onActivate() {
+        resetFull();
+        Screen screen = mc.currentScreen;
+        if (isSupportedContainer(screen)) {
+            startContainer((HandledScreen<?>) screen);
+        } else {
+            notifyUser("Open a chest or shulker with map bundles to begin sorting");
+        }
+    }
+
+    @Override
+    public void onDeactivate() {
+        returnCursorItem();
+        resetFull();
+    }
+
+    @EventHandler
+    private void onOpenScreen(OpenScreenEvent event) {
+        if (!isActive()) return;
+        Screen screen = event.screen;
+        if (isSupportedContainer(screen)) {
+            startContainer((HandledScreen<?>) screen);
+        } else {
+            // Container closed - safely return cursor item, save progress, wait for next chest
+            returnCursorItem();
+            activeScreen = null;
+            menu = null;
+            if (state != State.DONE) {
+                state = State.WAIT_FOR_CONTAINER;
+            }
+        }
+    }
+
+    @EventHandler
+    private void onTick(TickEvent.Post event) {
+        if (!isActive() || mc.player == null || mc.interactionManager == null) return;
+        if (state == State.WAIT_FOR_CONTAINER || state == State.WAIT_FOR_EMPTY_BUNDLE || state == State.DONE) return;
+
+        if (!contextIsOpen()) {
+            returnCursorItem();
+            activeScreen = null;
+            menu = null;
+            state = State.WAIT_FOR_CONTAINER;
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now < nextActionAt) return;
+
+        switch (state) {
+            case PREPARE_QUEUE -> prepareQueue(now);
+            case FIND_NEXT_MAP -> findNextMap(now);
+            case SELECT -> selectTarget(now);
+            case EXTRACT -> extractTarget(now);
+            case VERIFY_EXTRACT -> verifyExtract(now);
+            case INSERT -> insertTarget(now);
+            case VERIFY_INSERT -> verifyInsert(now);
+            default -> { }
+        }
+    }
+
+    private boolean isSupportedContainer(Screen screen) {
+        return screen instanceof GenericContainerScreen
+            || screen instanceof ShulkerBoxScreen
+            || screen instanceof Generic3x3ContainerScreen
+            || screen instanceof HopperScreen;
+    }
+
+    private void startContainer(HandledScreen<?> screen) {
+        activeScreen = screen;
+        menu = screen.getScreenHandler();
+
+        if (targetQueue.isEmpty()) {
+            state = State.PREPARE_QUEUE;
+        } else {
+            state = State.FIND_NEXT_MAP;
+        }
+        nextActionAt = System.currentTimeMillis() + 200;
+    }
+
+    private void prepareQueue(long now) {
+        boolean isXY = coordinateFormat.get() == CoordinateFormat.X_Y;
+        String configuredName = targetMapName.get().trim();
+        if (!configuredName.isEmpty()) {
+            detectedProject = configuredName.toLowerCase(Locale.ROOT);
+        } else {
+            detectedProject = null;
+        }
+
+        String coordSetting = lastMapCoordinate.get().trim();
+        boolean autoDetect = coordSetting.isEmpty() || coordSetting.equalsIgnoreCase("auto");
+
+        int maxCol = -1;
+        int maxRow = -1;
+
+        if (!autoDetect) {
+            Matcher matcher = LAST_COORDINATE.matcher(coordSetting);
+            if (matcher.matches()) {
+                if (detectedProject == null && matcher.group(1) != null) {
+                    detectedProject = matcher.group(1).trim().toLowerCase(Locale.ROOT);
+                }
+                int first = Integer.parseInt(matcher.group(2));
+                int second = Integer.parseInt(matcher.group(3));
+                maxCol = isXY ? first : second;
+                maxRow = isXY ? second : first;
+            }
+        }
+
+        // Auto-detect project or dimensions if needed
+        if (detectedProject == null || maxCol < 0 || maxRow < 0) {
+            // Check MapArtManager active set
+            MapArtSet active = MapArtManager.get().getActiveSet();
+            if (active != null && active.getCols() > 0 && active.getRows() > 0) {
+                if (maxCol < 0 || maxRow < 0) {
+                    maxCol = active.getCols() - 1;
+                    maxRow = active.getRows() - 1;
+                }
+                if (detectedProject == null) {
+                    detectedProject = active.getProjectId().trim().toLowerCase(Locale.ROOT);
+                }
+            }
+        }
+
+        if (detectedProject == null || maxCol < 0 || maxRow < 0) {
+            // Scan container and inventory for map bounds and project name
+            for (Slot slot : menu.slots) {
+                ItemStack stack = slot.getStack();
+                if (stack.isOf(Items.BUNDLE)) {
+                    BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+                    for (ItemStack item : contents.iterate()) {
+                        if (!item.isOf(Items.FILLED_MAP)) continue;
+                        Matcher m = COORDINATE.matcher(net.minecraft.util.Formatting.strip(item.getName().getString()).trim());
+                        if (m.matches()) {
+                            String itemProj = m.group(1).trim().toLowerCase(Locale.ROOT);
+                            if (detectedProject != null && !itemProj.equals(detectedProject)) continue;
+                            int f = Integer.parseInt(m.group(2));
+                            int s = Integer.parseInt(m.group(3));
+                            int c = isXY ? f : s;
+                            int r = isXY ? s : f;
+                            if (c > maxCol) maxCol = c;
+                            if (r > maxRow) maxRow = r;
+                            if (detectedProject == null) detectedProject = itemProj;
+                        }
+                    }
+                } else if (stack.isOf(Items.FILLED_MAP)) {
+                    Matcher m = COORDINATE.matcher(net.minecraft.util.Formatting.strip(stack.getName().getString()).trim());
+                    if (m.matches()) {
+                        String itemProj = m.group(1).trim().toLowerCase(Locale.ROOT);
+                        if (detectedProject != null && !itemProj.equals(detectedProject)) continue;
+                        int f = Integer.parseInt(m.group(2));
+                        int s = Integer.parseInt(m.group(3));
+                        int c = isXY ? f : s;
+                        int r = isXY ? s : f;
+                        if (c > maxCol) maxCol = c;
+                        if (r > maxRow) maxRow = r;
+                        if (detectedProject == null) detectedProject = itemProj;
+                    }
+                }
+            }
+        }
+
+        if (maxCol < 0 || maxRow < 0) {
+            fail("Could not detect map coordinates. Please specify last-map-coordinate (e.g. 21_15)");
+            return;
+        }
+
+        // Build target queue based on gridDirection and outputOrder
+        List<TargetCoord> queue = new ArrayList<>();
+        GridDirection dir = gridDirection.get();
+        OutputOrder order = outputOrder.get();
+
+        if (dir == GridDirection.Column_First) {
+            if (order == OutputOrder.LastToFirst) {
+                for (int c = maxCol; c >= 0; c--) {
+                    for (int r = maxRow; r >= 0; r--) {
+                        queue.add(new TargetCoord(c, r));
+                    }
+                }
+            } else {
+                for (int c = 0; c <= maxCol; c++) {
+                    for (int r = 0; r <= maxRow; r++) {
+                        queue.add(new TargetCoord(c, r));
+                    }
+                }
+            }
+        } else { // Row_First
+            if (order == OutputOrder.LastToFirst) {
+                for (int r = maxRow; r >= 0; r--) {
+                    for (int c = maxCol; c >= 0; c--) {
+                        queue.add(new TargetCoord(c, r));
+                    }
+                }
+            } else {
+                for (int r = 0; r <= maxRow; r++) {
+                    for (int c = 0; c <= maxCol; c++) {
+                        queue.add(new TargetCoord(c, r));
+                    }
+                }
+            }
+        }
+
+        targetQueue = queue;
+        currentProgressIndex = 0;
+        state = State.FIND_NEXT_MAP;
+        nextActionAt = now;
+
+        notifyUser("Queue initialized" + (detectedProject != null ? " for '" + detectedProject + "': " : ": ") + targetQueue.size() + " maps (" + (maxCol + 1) + "x" + (maxRow + 1)
+            + "), starting at " + formatCoord(targetQueue.getFirst()));
+    }
+
+    private void findNextMap(long now) {
+        if (currentProgressIndex >= targetQueue.size()) {
+            finish("All " + targetQueue.size() + " maps successfully sorted across containers!");
+            return;
+        }
+
+        currentTarget = targetQueue.get(currentProgressIndex);
+
+        // 1. Check if player has an empty or receptive bundle in inventory
+        currentDestinationSlot = findInventoryDestinationSlot();
+        if (currentDestinationSlot < 0) {
+            state = State.WAIT_FOR_EMPTY_BUNDLE;
+            notifyUser("§eInventory bundle is full! Store filled bundle and put fresh empty bundle in inventory.");
+            return;
+        }
+
+        // 2. Search container (chest/shulker) and inventory for currentTarget
+        SourceMatch match = findMap(currentTarget);
+        if (match == null) {
+            state = State.WAIT_FOR_CONTAINER;
+            notifyUser("§eMap " + formatCoord(currentTarget) + " (" + (currentProgressIndex + 1) + "/" + targetQueue.size()
+                + ") not in this chest. Open next chest/shulker.");
+            return;
+        }
+
+        currentSourceSlot = match.slot();
+        isSourceLooseMap = match.isLoose();
+
+        if (isSourceLooseMap) {
+            state = State.EXTRACT;
+            nextActionAt = now;
+        } else {
+            // Select item inside bundle
+            ItemStack sourceStack = menu.getSlot(currentSourceSlot).getStack();
+            int selected = BundleItem.getSelectedStackIndex(sourceStack);
+            if (selected != match.bundleItemIndex()) {
+                BundleItem.setSelectedStackIndex(sourceStack, match.bundleItemIndex());
+                if (mc.getNetworkHandler() != null) {
+                    mc.getNetworkHandler().sendPacket(new BundleItemSelectedC2SPacket(currentSourceSlot, match.bundleItemIndex()));
+                }
+            }
+            state = State.EXTRACT;
+            nextActionAt = now + actionDelay.get();
+        }
+    }
+
+    private void selectTarget(long now) {
+        state = State.EXTRACT;
+        nextActionAt = now;
+    }
+
+    private void extractTarget(long now) {
+        if (!menu.getCursorStack().isEmpty()) {
+            // Automatically clear cursor by safely returning held item to inventory
+            returnCursorItem();
+            if (!menu.getCursorStack().isEmpty()) {
+                fail("Inventory full; please clear the item from your cursor");
+                return;
+            }
+            nextActionAt = now + actionDelay.get();
+            return;
+        }
+
+        destinationCountBefore = bundleSize(menu.getSlot(currentDestinationSlot).getStack());
+
+        if (isSourceLooseMap) {
+            click(currentSourceSlot, 0); // Pick up loose map with left click
+        } else {
+            click(currentSourceSlot, 1); // Right click bundle to pop selected item
+        }
+
+        state = State.VERIFY_EXTRACT;
+        verifyDeadline = now + Math.max(1500, actionDelay.get() * 4);
+        nextActionAt = now + actionDelay.get();
+    }
+
+    private void verifyExtract(long now) {
+        ItemStack carried = menu.getCursorStack();
+        if (matchesTarget(carried, currentTarget)) {
+            state = State.INSERT;
+            nextActionAt = now;
+            return;
+        }
+
+        if (now < verifyDeadline) {
+            nextActionAt = now + 40;
+            return;
+        }
+
+        // Extraction timed out - safely return whatever is on the cursor
+        returnCursorItem();
+        fail("Map extraction timed out / was rejected; sorting paused safely");
+    }
+
+    private void insertTarget(long now) {
+        click(currentDestinationSlot, 0); // Left click bundle with carried map
+        state = State.VERIFY_INSERT;
+        verifyDeadline = now + Math.max(1500, actionDelay.get() * 4);
+        nextActionAt = now + actionDelay.get();
+    }
+
+    private void verifyInsert(long now) {
+        int count = bundleSize(menu.getSlot(currentDestinationSlot).getStack());
+        if (menu.getCursorStack().isEmpty() && count >= destinationCountBefore + 1) {
+            currentProgressIndex++;
+            state = State.FIND_NEXT_MAP;
+            nextActionAt = now;
+            return;
+        }
+
+        if (now < verifyDeadline) {
+            nextActionAt = now + 40;
+            return;
+        }
+
+        if (menu.getCursorStack().isEmpty()) {
+            // Cursor is empty: the map was accepted by server even if count didn't update in time
+            currentProgressIndex++;
+            state = State.FIND_NEXT_MAP;
+            nextActionAt = now;
+            return;
+        }
+
+        // Return uninserted map safely to inventory so it never drops on ground
+        returnCursorItem();
+        fail("The destination bundle could not accept the map (returned safely)");
+    }
+
+    private int findInventoryDestinationSlot() {
+        for (int i = 0; i < menu.slots.size(); i++) {
+            Slot slot = menu.getSlot(i);
+            if (!(slot.inventory instanceof PlayerInventory)) continue;
+            ItemStack stack = slot.getStack();
+            if (!(stack.getItem() instanceof BundleItem)) continue;
+
+            BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+            if (contents.size() < 64) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private SourceMatch findMap(TargetCoord target) {
+        // Priority 1: Search chest / container slots
+        for (int i = 0; i < menu.slots.size(); i++) {
+            Slot slot = menu.getSlot(i);
+            if (slot.inventory instanceof PlayerInventory) continue; // Skip player inventory for source
+
+            ItemStack stack = slot.getStack();
+            if (stack.getItem() instanceof BundleItem) {
+                BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+                int itemIdx = 0;
+                for (ItemStack item : contents.iterate()) {
+                    if (matchesTarget(item, target)) {
+                        return new SourceMatch(i, false, itemIdx);
+                    }
+                    itemIdx++;
+                }
+            } else if (stack.isOf(Items.FILLED_MAP)) {
+                if (matchesTarget(stack, target)) {
+                    return new SourceMatch(i, true, -1);
+                }
+            }
+        }
+
+        // Priority 2: Also check player inventory bundles if not found in chest
+        for (int i = 0; i < menu.slots.size(); i++) {
+            Slot slot = menu.getSlot(i);
+            if (!(slot.inventory instanceof PlayerInventory)) continue;
+            if (i == currentDestinationSlot) continue; // Don't pull from the current destination bundle
+
+            ItemStack stack = slot.getStack();
+            if (stack.isOf(Items.BUNDLE)) {
+                BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+                int itemIdx = 0;
+                for (ItemStack item : contents.iterate()) {
+                    if (matchesTarget(item, target)) {
+                        return new SourceMatch(i, false, itemIdx);
+                    }
+                    itemIdx++;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private boolean matchesTarget(ItemStack stack, TargetCoord target) {
+        if (!stack.isOf(Items.FILLED_MAP)) return false;
+        Matcher m = COORDINATE.matcher(net.minecraft.util.Formatting.strip(stack.getName().getString()).trim());
+        if (!m.matches()) return false;
+
+        boolean isXY = coordinateFormat.get() == CoordinateFormat.X_Y;
+        int first = Integer.parseInt(m.group(2));
+        int second = Integer.parseInt(m.group(3));
+        int col = isXY ? first : second;
+        int row = isXY ? second : first;
+
+        if (col != target.col() || row != target.row()) return false;
+
+        if (detectedProject != null) {
+            String proj = m.group(1).trim().toLowerCase(Locale.ROOT);
+            return proj.equals(detectedProject);
+        }
+        return true;
+    }
+
+    private String formatCoord(TargetCoord c) {
+        return coordinateFormat.get() == CoordinateFormat.X_Y ? (c.col() + "_" + c.row()) : (c.row() + "_" + c.col());
+    }
+
+    private int bundleSize(ItemStack stack) {
+        return stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT).size();
+    }
+
+    private void click(int slot, int button) {
+        mc.interactionManager.clickSlot(menu.syncId, slot, button, SlotActionType.PICKUP, mc.player);
+    }
+
+    private boolean contextIsOpen() {
+        return activeScreen != null
+            && mc.currentScreen == activeScreen
+            && mc.player != null
+            && mc.player.currentScreenHandler == menu;
+    }
+
+    private void returnCursorItem() {
+        if (menu == null || mc.player == null) return;
+        if (menu.getCursorStack().isEmpty()) return;
+
+        // 1. Try to find an empty slot in player inventory first
+        for (int i = 0; i < menu.slots.size(); i++) {
+            Slot s = menu.getSlot(i);
+            if (s.inventory instanceof PlayerInventory && s.getStack().isEmpty()) {
+                click(i, 0);
+                return;
+            }
+        }
+
+        // 2. Try original source slot if empty
+        if (currentSourceSlot >= 0 && currentSourceSlot < menu.slots.size()) {
+            Slot s = menu.getSlot(currentSourceSlot);
+            if (s.getStack().isEmpty()) {
+                click(currentSourceSlot, 0);
+                return;
+            }
+        }
+
+        // 3. Try any empty slot in the container
+        for (int i = 0; i < menu.slots.size(); i++) {
+            Slot s = menu.getSlot(i);
+            if (s.getStack().isEmpty()) {
+                click(i, 0);
+                return;
+            }
+        }
+    }
+
+    private void finish(String message) {
+        returnCursorItem();
+        state = State.DONE;
+        notifyUser("§a" + message);
+    }
+
+    private void fail(String message) {
+        returnCursorItem();
+        state = State.WAIT_FOR_CONTAINER;
+        notifyUser("§c" + message);
+    }
+
+    private void notifyUser(String message) {
+        if (!localNotifications.get()) return;
+        ChatUtils.sendMsg("Map Chest Sorter", Text.literal(message));
+        mc.getToastManager().add(new SystemToast(
+            SystemToast.Type.PERIODIC_NOTIFICATION,
+            Text.literal("Map Chest Sorter"),
+            Text.literal(message.replaceAll("§[0-9a-fk-or]", ""))
+        ));
+    }
+
+    private void resetFull() {
+        state = State.WAIT_FOR_CONTAINER;
+        activeScreen = null;
+        menu = null;
+        targetQueue.clear();
+        currentProgressIndex = 0;
+        detectedProject = null;
+        currentSourceSlot = -1;
+        currentDestinationSlot = -1;
+        destinationCountBefore = 0;
+        isSourceLooseMap = false;
+        currentTarget = null;
+    }
+
+    public enum GridDirection {
+        Column_First,
+        Row_First
+    }
+
+    public enum CoordinateFormat {
+        X_Y,
+        Y_X
+    }
+
+    public enum OutputOrder {
+        LastToFirst,
+        FirstToLast
+    }
+
+    private enum State {
+        WAIT_FOR_CONTAINER,
+        WAIT_FOR_EMPTY_BUNDLE,
+        PREPARE_QUEUE,
+        FIND_NEXT_MAP,
+        SELECT,
+        EXTRACT,
+        VERIFY_EXTRACT,
+        INSERT,
+        VERIFY_INSERT,
+        DONE
+    }
+
+    private record TargetCoord(int col, int row) { }
+
+    private record SourceMatch(int slot, boolean isLoose, int bundleItemIndex) { }
+}

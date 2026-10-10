@@ -1,46 +1,30 @@
 plugins {
-    id("net.fabricmc.fabric-loom") version "1.17-SNAPSHOT"
+    alias(libs.plugins.fabric.loom)
 }
 
 base {
     archivesName = properties["archives_base_name"] as String
-    version = "1.0.0"
+    version = libs.versions.mod.version.get()
     group = properties["maven_group"] as String
 }
 
 repositories {
-    mavenCentral()
-
-    maven {
-        name = "Meteor Releases"
-        url = uri("https://maven.meteordev.org/releases")
-    }
-
-    maven {
-        name = "Meteor Snapshots"
-        url = uri("https://maven.meteordev.org/snapshots")
-    }
+    maven("https://maven.meteordev.org/releases") { name = "meteor-releases" }
+    maven("https://maven.meteordev.org/snapshots") { name = "meteor-snapshots" }
 }
 
 dependencies {
-    minecraft("com.mojang:minecraft:26.2")
-    implementation("net.fabricmc:fabric-loader:0.19.4")
-    implementation("meteordevelopment:meteor-client:26.2-SNAPSHOT")
-}
-
-java {
-    toolchain {
-        languageVersion.set(JavaLanguageVersion.of(25))
-    }
-
-    withSourcesJar()
+    minecraft(libs.minecraft)
+    mappings(variantOf(libs.yarn) { classifier("v2") })
+    modImplementation(libs.fabric.loader)
+    modImplementation(libs.meteor.client)
 }
 
 tasks {
     processResources {
         val values = mapOf(
             "version" to project.version,
-            "minecraft_version" to "26.2"
+            "minecraft_version" to libs.versions.minecraft.get()
         )
         inputs.properties(values)
         filteringCharset = "UTF-8"
@@ -49,7 +33,13 @@ tasks {
 
     withType<JavaCompile>().configureEach {
         options.encoding = "UTF-8"
-        options.release.set(25)
+        options.release = 21
         options.compilerArgs.addAll(listOf("-Xlint:deprecation", "-Xlint:unchecked"))
     }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    withSourcesJar()
 }

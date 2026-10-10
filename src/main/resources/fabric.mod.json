@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "map-bundle-collector",
   "version": "${version}",
-  "name": "Map Bundle Collector",
-  "description": "Collects matching filled maps into inventory bundles from a manually opened container.",
+  "name": "Bundle Sorter",
+  "description": "Collects, sorts, and previews map-art bundles.",
   "authors": ["tysonsxz"],
   "environment": "client",
   "entrypoints": {
@@ -17,9 +17,9 @@
     "modmenu": { "parent": { "id": "meteor-client" } }
   },
   "depends": {
-    "java": ">=25",
-    "minecraft": "~26.2",
-    "fabricloader": ">=0.19.3",
+    "java": ">=21",
+    "minecraft": "~${minecraft_version}",
+    "fabricloader": ">=0.18.2",
     "meteor-client": "*"
   }
 }

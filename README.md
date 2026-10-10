@@ -1,50 +1,68 @@
-# Bundle - Map Bundle Collector & Map Art Viewer
-**Made by tysonsxz**
+# Bundle Sorter
 
-A privacy-focused Meteor Client addon for Fabric / Minecraft 26.2.
+A client-side [Meteor Client](https://meteorclient.com/) addon for Fabric and Minecraft 1.21.11 that collects, sorts, deduplicates, and previews map-art bundles.
 
----
+## Features
 
-## 📷 Screenshots
+- **Bundle collector:** moves matching filled maps from opened containers into inventory bundles.
+- **Chest sorter:** retrieves coordinate-named map tiles in grid order across chests and shulker boxes.
+- **Duplicate extractor:** separates duplicate map tiles into an empty bundle.
+- **Map-art viewer:** stitches bundle contents into an inventory side panel or fullscreen preview.
+- **Safety controls:** configurable action delays and cursor recovery help avoid inventory desynchronisation.
 
-### In-Game Inventory Side Widget
-Live stitched map preview right next to your inventory or container with piece counts, zoom controls, and loaded toggle:
+## Screenshots
 
-![Inventory Side Widget](share/screenshots/inventory_preview.png)
+### Inventory preview
 
-### Fullscreen Map Art Render Screen
-Interactive full-screen viewer with zoom, panning, centering, grid toggling, flip orientation, and clear memory options:
+![Inventory side-panel preview](docs/screenshots/inventory_preview.png)
 
-![Fullscreen Map Render](share/screenshots/fullscreen_render.png)
+### Fullscreen viewer
 
----
+![Fullscreen map-art viewer](docs/screenshots/fullscreen_render.png)
 
-## ✨ Features
-- **Map Bundle Collector**: Automatically moves matching filled maps into inventory bundles when you manually open a container.
-- **Map Art Viewer**: Previews multi-part map art directly from bundles in your inventory with side-panel preview and missing tile detection.
-- **Privacy & Safety**: Client-only operation with configurable action and open delays.
+## Requirements
 
----
+- Minecraft `1.21.11`
+- Fabric Loader `0.18.2` or newer
+- Meteor Client for Minecraft 1.21.11
+- Java 21 or newer
 
-## ⚙️ Requirements
-- **Minecraft**: `26.2`
-- **Fabric Loader**: `>= 0.19.4`
-- **Meteor Client**: for 26.2
-- **Java**: 25+
+## Installation
 
----
+1. Install Fabric Loader and Meteor Client for Minecraft 1.21.11.
+2. Download the latest Bundle Sorter JAR from the repository's Releases page.
+3. Place the JAR in your Minecraft instance's `mods` directory.
+4. Start Minecraft and configure the modules under the **Bundle Sorter** Meteor category.
 
-## 🚀 How to Install
-1. Make sure you have **Fabric Loader** and **Meteor Client** installed for Minecraft 26.2.
-2. Press `Win + R`, type `%appdata%\.minecraft\mods` and hit Enter.
-3. Place `map-bundle-collector-1.0.0.jar` (found in the [`share/`](share/) folder or `build/libs/`) into your `mods` folder.
-4. Launch Minecraft!
+## Building
 
----
+Clone the repository and run:
 
-## 🛠️ Building from Source
-Build with Gradle:
-```bash
+```shell
 ./gradlew build
 ```
-The remapped addon JAR is written to `build/libs/`.
+
+On Windows:
+
+```powershell
+.\gradlew.bat build
+```
+
+The remapped mod JAR is generated in `build/libs/`.
+
+## Project structure
+
+```text
+src/main/java/       Java source and mixins
+src/main/resources/  Fabric metadata and mixin configuration
+gradle/               Gradle version catalog and wrapper
+docs/screenshots/     README images
+```
+
+## Privacy
+
+Bundle Sorter runs client-side and does not include telemetry or analytics. Inventory actions still communicate with the Minecraft server as part of normal gameplay.
+
+## License
+
+No license has been selected yet. Add a license before accepting external contributions or redistributions.
