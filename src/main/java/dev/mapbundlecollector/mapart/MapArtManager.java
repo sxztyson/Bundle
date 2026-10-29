@@ -1,18 +1,6 @@
 package dev.mapbundlecollector.mapart;
 
-import net.minecraft.block.MapColor;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.texture.NativeImageBackedTexture;
-import net.minecraft.component.DataComponentTypes;
-import net.minecraft.component.type.BundleContentsComponent;
-import net.minecraft.component.type.MapIdComponent;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.item.map.MapState;
-import net.minecraft.util.Identifier;
-
+import com.mojang.blaze3d.platform.NativeImage;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -20,6 +8,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.BundleContents;
+import net.minecraft.world.level.material.MapColor;
+import net.minecraft.world.level.saveddata.maps.MapId;
+import net.minecraft.world.level.saveddata.maps.MapItemSavedData;
 
 public final class MapArtManager {
     private static final MapArtManager INSTANCE = new MapArtManager();
@@ -34,7 +33,7 @@ public final class MapArtManager {
 
     private MapArtSet activeSet;
     private Identifier textureId;
-    private NativeImageBackedTexture dynamicTexture;
+    private DynamicTexture dynamicTexture;
     private int lastScannedVersion = -1;
     private int textureWidth = 0;
     private int textureHeight = 0;
@@ -45,17 +44,17 @@ public final class MapArtManager {
 
     private MapArtManager() {}
 
-    public void forceUpdate(ClientPlayerEntity player) {
+    public void forceUpdate(LocalPlayer player) {
         lastScannedVersion = -1;
         update(player);
     }
 
-    public void update(ClientPlayerEntity player) {
+    public void update(LocalPlayer player) {
         dev.mapbundlecollector.modules.MapArtViewerModule module =
             meteordevelopment.meteorclient.systems.modules.Modules.get().get(dev.mapbundlecollector.modules.MapArtViewerModule.class);
         boolean keepLoaded = (module != null && module.keepLoaded.get());
 
-        if (player == null || MinecraftClient.getInstance().world == null) {
+        if (player == null || Minecraft.getInstance().level == null) {
             if (!keepLoaded) {
                 clear();
             }
@@ -65,20 +64,20 @@ public final class MapArtManager {
         List<ItemStack> mapStacks = new ArrayList<>();
 
         // 1. Scan player inventory slots for bundles and maps
-        for (int i = 0; i < player.getInventory().size(); i++) {
-            ItemStack stack = player.getInventory().getStack(i);
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getInventory().getItem(i);
             if (stack.isEmpty()) continue;
 
-            if (stack.contains(DataComponentTypes.BUNDLE_CONTENTS)) {
-                BundleContentsComponent bundle = stack.get(DataComponentTypes.BUNDLE_CONTENTS);
+            if (stack.has(DataComponents.BUNDLE_CONTENTS)) {
+                BundleContents bundle = stack.get(DataComponents.BUNDLE_CONTENTS);
                 if (bundle != null) {
-                    for (ItemStack bundledItem : bundle.iterate()) {
-                        if (bundledItem.isOf(Items.FILLED_MAP)) {
+                    for (ItemStack bundledItem : bundle.itemCopyStream().toList()) {
+                        if (bundledItem.is(Items.FILLED_MAP)) {
                             mapStacks.add(bundledItem);
                         }
                     }
                 }
-            } else if (stack.isOf(Items.FILLED_MAP)) {
+            } else if (stack.is(Items.FILLED_MAP)) {
                 mapStacks.add(stack);
             }
         }
@@ -94,7 +93,7 @@ public final class MapArtManager {
         Map<String, List<ParsedEntry>> scannedProjects = new HashMap<>();
 
         for (ItemStack stack : mapStacks) {
-            String rawName = net.minecraft.util.Formatting.strip(stack.getName().getString()).trim();
+            String rawName = net.minecraft.ChatFormatting.stripFormatting(stack.getHoverName().getString()).trim();
             Matcher gridMatcher = PATTERN_GRID.matcher(rawName);
 
             if (gridMatcher.matches()) {
@@ -132,7 +131,7 @@ public final class MapArtManager {
             return;
         }
 
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
 
         if (keepLoaded) {
             // MERGE into existing projectSets so pieces stay loaded when bundles are removed!
@@ -163,8 +162,8 @@ public final class MapArtManager {
                 }
 
                 for (ParsedEntry pe : entries) {
-                    MapIdComponent mapId = pe.stack.get(DataComponentTypes.MAP_ID);
-                    MapState mapState = (mc.world != null && mapId != null) ? mc.world.getMapState(mapId) : null;
+                    MapId mapId = pe.stack.get(DataComponents.MAP_ID);
+                    MapItemSavedData mapState = (mc.level != null && mapId != null) ? mc.level.getMapData(mapId) : null;
                     targetSet.addTile(new MapTile(pe.row, pe.col, pe.name, mapId, pe.stack, mapState));
                 }
                 targetSet.calculateMissing();
@@ -185,8 +184,8 @@ public final class MapArtManager {
 
                 MapArtSet set = new MapArtSet(projName, maxRow + 1, maxCol + 1);
                 for (ParsedEntry pe : entries) {
-                    MapIdComponent mapId = pe.stack.get(DataComponentTypes.MAP_ID);
-                    MapState mapState = (mc.world != null && mapId != null) ? mc.world.getMapState(mapId) : null;
+                    MapId mapId = pe.stack.get(DataComponents.MAP_ID);
+                    MapItemSavedData mapState = (mc.level != null && mapId != null) ? mc.level.getMapData(mapId) : null;
                     set.addTile(new MapTile(pe.row, pe.col, pe.name, mapId, pe.stack, mapState));
                 }
                 set.calculateMissing();
@@ -288,8 +287,8 @@ public final class MapArtManager {
                         for (int py = 0; py < 128; py++) {
                             for (int px = 0; px < 128; px++) {
                                 byte colorByte = colors[px + py * 128];
-                                int argb = MapColor.getRenderColor(colorByte & 0xFF);
-                                image.setColorArgb(originX + px, originY + py, argb);
+                                int argb = MapColor.getColorFromPackedId(colorByte & 0xFF);
+                                image.setPixel(originX + px, originY + py, argb);
                             }
                         }
                     }
@@ -300,26 +299,26 @@ public final class MapArtManager {
                             boolean isBorder = (px == 0 || px == 127 || py == 0 || py == 127);
                             boolean checker = ((px / 16) + (py / 16)) % 2 == 0;
                             int color = isBorder ? 0xFF3E434D : (checker ? 0xFF1E2128 : 0xFF272B34);
-                            image.setColorArgb(originX + px, originY + py, color);
+                            image.setPixel(originX + px, originY + py, color);
                         }
                     }
                 }
             }
         }
 
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
 
         if (dynamicTexture != null) {
             dynamicTexture.close();
             if (textureId != null) {
-                mc.getTextureManager().destroyTexture(textureId);
+                mc.getTextureManager().release(textureId);
             }
         }
 
         String safeProject = set.getProjectId().replaceAll("[^a-z0-9_.-]", "_").toLowerCase();
-        textureId = Identifier.of("mapbundlecollector", "map_art_" + safeProject + "_" + Math.abs(lastScannedVersion));
-        dynamicTexture = new NativeImageBackedTexture(() -> "map_art_" + safeProject, image);
-        mc.getTextureManager().registerTexture(textureId, dynamicTexture);
+        textureId = Identifier.fromNamespaceAndPath("mapbundlecollector", "map_art_" + safeProject + "_" + Math.abs(lastScannedVersion));
+        dynamicTexture = new DynamicTexture(() -> "map_art_" + safeProject, image);
+        mc.getTextureManager().register(textureId, dynamicTexture);
 
         textureWidth = width;
         textureHeight = height;
@@ -355,7 +354,7 @@ public final class MapArtManager {
             dynamicTexture = null;
         }
         if (textureId != null) {
-            MinecraftClient.getInstance().getTextureManager().destroyTexture(textureId);
+            Minecraft.getInstance().getTextureManager().release(textureId);
             textureId = null;
         }
         textureWidth = 0;

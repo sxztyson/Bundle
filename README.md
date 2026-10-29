@@ -1,6 +1,6 @@
 # Bundle Sorter
 
-A client-side [Meteor Client](https://meteorclient.com/) addon for Fabric and Minecraft 1.21.11 that collects, sorts, deduplicates, and previews map-art bundles.
+A client-side [Meteor Client](https://meteorclient.com/) addon for Fabric and Minecraft 26.2 that collects, sorts, deduplicates, and previews map-art bundles.
 
 ## Features
 
@@ -22,14 +22,14 @@ A client-side [Meteor Client](https://meteorclient.com/) addon for Fabric and Mi
 
 ## Requirements
 
-- Minecraft `1.21.11`
-- Fabric Loader `0.18.2` or newer
-- Meteor Client for Minecraft 1.21.11
-- Java 21 or newer
+- Minecraft `26.2`
+- Fabric Loader `0.19.3` or newer
+- Meteor Client for Minecraft 26.2
+- Java 25 or newer
 
 ## Installation
 
-1. Install Fabric Loader and Meteor Client for Minecraft 1.21.11.
+1. Install Fabric Loader and Meteor Client for Minecraft 26.2.
 2. Download the latest Bundle Sorter JAR from the repository's Releases page.
 3. Place the JAR in your Minecraft instance's `mods` directory.
 4. Start Minecraft and configure the modules under the **Bundle Sorter** Meteor category.
@@ -48,14 +48,14 @@ On Windows:
 .\gradlew.bat build
 ```
 
-The remapped mod JAR is generated in `build/libs/`.
+The add-on JAR is generated in `build/libs/`.
 
 ## Project structure
 
 ```text
 src/main/java/       Java source and mixins
 src/main/resources/  Fabric metadata and mixin configuration
-gradle/               Gradle version catalog and wrapper
+gradle/               Gradle wrapper
 docs/screenshots/     README images
 ```
 

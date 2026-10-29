@@ -80,10 +80,10 @@ public final class MapArtViewerModule extends Module {
     public void clearLoaded() {
         MapArtManager.get().clear();
         if (mc.player != null) {
-            mc.inGameHud.getChatHud().addMessage(net.minecraft.text.Text.literal("§c[Map Art]§r Cleared all loaded maps from memory."));
+            mc.gui.hud.getChat().addClientSystemMessage(net.minecraft.network.chat.Component.literal("§c[Map Art]§r Cleared all loaded maps from memory."));
             try {
-                mc.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(
-                    net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.0f));
+                mc.getSoundManager().play(net.minecraft.client.resources.sounds.SimpleSoundInstance.forUI(
+                    net.minecraft.sounds.SoundEvents.UI_BUTTON_CLICK, 1.0f));
             } catch (Exception ignored) {}
         }
     }

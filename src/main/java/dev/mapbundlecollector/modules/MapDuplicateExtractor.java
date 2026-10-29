@@ -11,21 +11,20 @@ import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.ingame.InventoryScreen;
-import net.minecraft.client.toast.SystemToast;
-import net.minecraft.component.DataComponentTypes;
-import net.minecraft.component.type.BundleContentsComponent;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.BundleItem;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.BundleItemSelectedC2SPacket;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.Slot;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.text.Text;
-
+import net.minecraft.client.gui.components.toasts.SystemToast;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.InventoryScreen;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ServerboundSelectBundleItemPacket;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.BundleItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.BundleContents;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -37,7 +36,7 @@ import java.util.regex.Pattern;
 /** Extracts duplicate coordinate-named maps from bundles into an empty bundle. */
 public final class MapDuplicateExtractor extends Module {
     private static final Pattern COORDINATE = Pattern.compile("^(.+?)[_\\-\\s,\\[\\(]+(\\d+)[_\\-\\s,xX]+(\\d+)[_\\]\\)]*(?:\\.[a-zA-Z0-9]+)?$");
-    private static final SystemToast.Type TOAST_TYPE = SystemToast.Type.PERIODIC_NOTIFICATION;
+    private static final SystemToast.SystemToastId TOAST_TYPE = SystemToast.SystemToastId.PERIODIC_NOTIFICATION;
 
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
 
@@ -63,7 +62,7 @@ public final class MapDuplicateExtractor extends Module {
 
     private State state = State.WAIT_FOR_INVENTORY;
     private InventoryScreen activeScreen;
-    private ScreenHandler menu;
+    private AbstractContainerMenu menu;
     private List<Integer> sourceSlots = List.of();
     private int currentSourceSlot = -1;
     private int currentDestinationSlot = -1;
@@ -81,7 +80,7 @@ public final class MapDuplicateExtractor extends Module {
     @Override
     public void onActivate() {
         reset();
-        Screen screen = mc.currentScreen;
+        Screen screen = mc.gui.screen();
         if (screen instanceof InventoryScreen inventoryScreen) start(inventoryScreen);
         else notifyUser("Open your inventory with map bundles to extract duplicates");
     }
@@ -105,7 +104,7 @@ public final class MapDuplicateExtractor extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
-        if (!isActive() || mc.player == null || mc.interactionManager == null) return;
+        if (!isActive() || mc.player == null || mc.gameMode == null) return;
         if (state == State.WAIT_FOR_INVENTORY || state == State.DONE) return;
         if (!contextIsOpen()) {
             returnCursorItem();
@@ -130,7 +129,7 @@ public final class MapDuplicateExtractor extends Module {
     private void start(InventoryScreen screen) {
         reset();
         activeScreen = screen;
-        menu = screen.getScreenHandler();
+        menu = screen.getMenu();
         state = State.PREPARE;
         nextActionAt = System.currentTimeMillis() + 200;
     }
@@ -142,11 +141,11 @@ public final class MapDuplicateExtractor extends Module {
 
         for (int menuSlot = 0; menuSlot < menu.slots.size(); menuSlot++) {
             Slot slot = menu.getSlot(menuSlot);
-            if (!(slot.inventory instanceof PlayerInventory)) continue;
-            ItemStack stack = slot.getStack();
+            if (!(slot.container instanceof Inventory)) continue;
+            ItemStack stack = slot.getItem();
             if (!(stack.getItem() instanceof BundleItem)) continue;
 
-            BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+            BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
             if (contents.isEmpty()) {
                 emptyBundles.add(menuSlot);
             } else {
@@ -164,12 +163,12 @@ public final class MapDuplicateExtractor extends Module {
         List<DuplicateEntry> duplicates = new ArrayList<>();
 
         for (int slotIndex : filledBundleSlots) {
-            ItemStack stack = menu.getSlot(slotIndex).getStack();
-            BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+            ItemStack stack = menu.getSlot(slotIndex).getItem();
+            BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
 
-            for (ItemStack map : contents.iterate()) {
-                if (!map.isOf(Items.FILLED_MAP)) continue;
-                Matcher matcher = COORDINATE.matcher(net.minecraft.util.Formatting.strip(map.getName().getString()).trim());
+            for (ItemStack map : contents.itemCopyStream().toList()) {
+                if (!map.is(Items.FILLED_MAP)) continue;
+                Matcher matcher = COORDINATE.matcher(net.minecraft.ChatFormatting.stripFormatting(map.getHoverName().getString()).trim());
                 if (!matcher.matches()) continue;
 
                 String project = matcher.group(1).trim().toLowerCase(Locale.ROOT);
@@ -231,9 +230,9 @@ public final class MapDuplicateExtractor extends Module {
         int itemIndex = -1;
 
         for (int slot : sourceSlots) {
-            ItemStack stack = menu.getSlot(slot).getStack();
+            ItemStack stack = menu.getSlot(slot).getItem();
             if (!(stack.getItem() instanceof BundleItem)) continue;
-            BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+            BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
             int idx = findTargetIndex(contents, target);
             if (idx >= 0) {
                 targetSourceSlot = slot;
@@ -250,23 +249,23 @@ public final class MapDuplicateExtractor extends Module {
         currentSourceSlot = targetSourceSlot;
         currentDestinationSlot = currentTransfer.destinationSlot();
 
-        ItemStack source = menu.getSlot(currentSourceSlot).getStack();
-        int selected = BundleItem.getSelectedStackIndex(source);
+        ItemStack source = menu.getSlot(currentSourceSlot).getItem();
+        int selected = BundleItem.getSelectedItemIndex(source);
         if (selected != itemIndex) {
-            BundleItem.setSelectedStackIndex(source, itemIndex);
-            if (mc.getNetworkHandler() == null) {
+            BundleItem.toggleSelectedItem(source, itemIndex);
+            if (mc.getConnection() == null) {
                 fail("Not connected to a server");
                 return;
             }
-            mc.getNetworkHandler().sendPacket(new BundleItemSelectedC2SPacket(currentSourceSlot, itemIndex));
+            mc.getConnection().send(new ServerboundSelectBundleItemPacket(currentSourceSlot, itemIndex));
         }
         state = State.EXTRACT;
         nextActionAt = now + actionDelay.get();
     }
 
-    private int findTargetIndex(BundleContentsComponent contents, DuplicateEntry target) {
+    private int findTargetIndex(BundleContents contents, DuplicateEntry target) {
         int i = 0;
-        for (ItemStack item : contents.iterate()) {
+        for (ItemStack item : contents.itemCopyStream().toList()) {
             DuplicateEntry parsed = parseEntry(item);
             if (parsed != null && parsed.column() == target.column() && parsed.row() == target.row() && parsed.project().equals(target.project())) {
                 return i;
@@ -277,8 +276,8 @@ public final class MapDuplicateExtractor extends Module {
     }
 
     private DuplicateEntry parseEntry(ItemStack map) {
-        if (!map.isOf(Items.FILLED_MAP)) return null;
-        Matcher matcher = COORDINATE.matcher(net.minecraft.util.Formatting.strip(map.getName().getString()).trim());
+        if (!map.is(Items.FILLED_MAP)) return null;
+        Matcher matcher = COORDINATE.matcher(net.minecraft.ChatFormatting.stripFormatting(map.getHoverName().getString()).trim());
         if (!matcher.matches()) return null;
         int first = Integer.parseInt(matcher.group(2));
         int second = Integer.parseInt(matcher.group(3));
@@ -289,17 +288,17 @@ public final class MapDuplicateExtractor extends Module {
     }
 
     private void extractTarget(long now) {
-        if (!menu.getCursorStack().isEmpty()) {
+        if (!menu.getCarried().isEmpty()) {
             // Automatically clear cursor by safely returning held item to inventory
             returnCursorItem();
-            if (!menu.getCursorStack().isEmpty()) {
+            if (!menu.getCarried().isEmpty()) {
                 fail("Inventory full; please clear the item from your cursor");
                 return;
             }
             nextActionAt = now + actionDelay.get();
             return;
         }
-        destinationCountBefore = bundleSize(menu.getSlot(currentDestinationSlot).getStack());
+        destinationCountBefore = bundleSize(menu.getSlot(currentDestinationSlot).getItem());
         click(currentSourceSlot, 1);
         state = State.VERIFY_EXTRACT;
         verifyDeadline = now + Math.max(1500, actionDelay.get() * 4);
@@ -307,7 +306,7 @@ public final class MapDuplicateExtractor extends Module {
     }
 
     private void verifyExtract(long now) {
-        DuplicateEntry carried = parseEntry(menu.getCursorStack());
+        DuplicateEntry carried = parseEntry(menu.getCarried());
         DuplicateEntry target = currentTransfer.entry();
         if (carried != null && carried.column() == target.column() && carried.row() == target.row() && carried.project().equals(target.project())) {
             state = State.INSERT;
@@ -332,8 +331,8 @@ public final class MapDuplicateExtractor extends Module {
     }
 
     private void verifyInsert(long now) {
-        int count = bundleSize(menu.getSlot(currentDestinationSlot).getStack());
-        if (menu.getCursorStack().isEmpty() && count >= destinationCountBefore + 1) {
+        int count = bundleSize(menu.getSlot(currentDestinationSlot).getItem());
+        if (menu.getCarried().isEmpty() && count >= destinationCountBefore + 1) {
             transferIndex++;
             state = State.SELECT;
             nextActionAt = now;
@@ -345,7 +344,7 @@ public final class MapDuplicateExtractor extends Module {
             return;
         }
 
-        if (menu.getCursorStack().isEmpty()) {
+        if (menu.getCarried().isEmpty()) {
             // Cursor is empty: duplicate map was deposited into bundle
             transferIndex++;
             state = State.SELECT;
@@ -358,28 +357,28 @@ public final class MapDuplicateExtractor extends Module {
     }
 
     private int bundleSize(ItemStack stack) {
-        return stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT).size();
+        return stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY).size();
     }
 
     private void click(int slot, int button) {
-        mc.interactionManager.clickSlot(menu.syncId, slot, button, SlotActionType.PICKUP, mc.player);
+        mc.gameMode.handleContainerInput(menu.containerId, slot, button, ContainerInput.PICKUP, mc.player);
     }
 
     private boolean contextIsOpen() {
         return activeScreen != null
-            && mc.currentScreen == activeScreen
+            && mc.gui.screen() == activeScreen
             && mc.player != null
-            && mc.player.currentScreenHandler == menu;
+            && mc.player.containerMenu == menu;
     }
 
     private void returnCursorItem() {
         if (menu == null || mc.player == null) return;
-        if (menu.getCursorStack().isEmpty()) return;
+        if (menu.getCarried().isEmpty()) return;
 
         // Try to find an empty slot in player inventory
         for (int i = 0; i < menu.slots.size(); i++) {
             Slot s = menu.getSlot(i);
-            if (s.inventory instanceof PlayerInventory && s.getStack().isEmpty()) {
+            if (s.container instanceof Inventory && s.getItem().isEmpty()) {
                 click(i, 0);
                 return;
             }
@@ -388,7 +387,7 @@ public final class MapDuplicateExtractor extends Module {
         // If player inventory is full, try original source slot if empty
         if (currentSourceSlot >= 0 && currentSourceSlot < menu.slots.size()) {
             Slot s = menu.getSlot(currentSourceSlot);
-            if (s.getStack().isEmpty()) {
+            if (s.getItem().isEmpty()) {
                 click(currentSourceSlot, 0);
                 return;
             }
@@ -409,11 +408,11 @@ public final class MapDuplicateExtractor extends Module {
 
     private void notifyUser(String message) {
         if (!localNotifications.get()) return;
-        ChatUtils.sendMsg("Map Duplicate Extractor", Text.literal(message));
-        mc.getToastManager().add(new SystemToast(
+        ChatUtils.sendMsg("Map Duplicate Extractor", Component.literal(message));
+        mc.gui.toastManager().addToast(new SystemToast(
             TOAST_TYPE,
-            Text.literal("Map Duplicate Extractor"),
-            Text.literal(message.replaceAll("§[0-9a-fk-or]", ""))
+            Component.literal("Map Duplicate Extractor"),
+            Component.literal(message.replaceAll("§[0-9a-fk-or]", ""))
         ));
     }
 

@@ -7,10 +7,10 @@ import dev.mapbundlecollector.modules.MapDuplicateExtractor;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.systems.modules.Category;
 import meteordevelopment.meteorclient.systems.modules.Modules;
-import net.minecraft.item.Items;
+import net.minecraft.world.item.Items;
 
 public final class MapBundleCollectorAddon extends MeteorAddon {
-    public static final Category CATEGORY = new Category("Bundle Sorter", Items.BUNDLE.getDefaultStack());
+    public static final Category CATEGORY = new Category("Bundle Sorter", () -> Items.BUNDLE.getDefaultInstance());
 
     @Override
     public void onInitialize() {

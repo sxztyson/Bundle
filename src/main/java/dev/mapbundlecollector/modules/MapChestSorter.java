@@ -14,25 +14,24 @@ import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.ingame.Generic3x3ContainerScreen;
-import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
-import net.minecraft.client.gui.screen.ingame.HandledScreen;
-import net.minecraft.client.gui.screen.ingame.HopperScreen;
-import net.minecraft.client.gui.screen.ingame.ShulkerBoxScreen;
-import net.minecraft.client.toast.SystemToast;
-import net.minecraft.component.DataComponentTypes;
-import net.minecraft.component.type.BundleContentsComponent;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.BundleItem;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.BundleItemSelectedC2SPacket;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.Slot;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.text.Text;
-
+import net.minecraft.client.gui.components.toasts.SystemToast;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.inventory.ContainerScreen;
+import net.minecraft.client.gui.screens.inventory.DispenserScreen;
+import net.minecraft.client.gui.screens.inventory.HopperScreen;
+import net.minecraft.client.gui.screens.inventory.ShulkerBoxScreen;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ServerboundSelectBundleItemPacket;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.BundleItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.BundleContents;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -91,8 +90,8 @@ public final class MapChestSorter extends Module {
         .build());
 
     private State state = State.WAIT_FOR_CONTAINER;
-    private HandledScreen<?> activeScreen;
-    private ScreenHandler menu;
+    private AbstractContainerScreen<?> activeScreen;
+    private AbstractContainerMenu menu;
 
     private List<TargetCoord> targetQueue = new ArrayList<>();
     private int currentProgressIndex = 0;
@@ -114,9 +113,9 @@ public final class MapChestSorter extends Module {
     @Override
     public void onActivate() {
         resetFull();
-        Screen screen = mc.currentScreen;
+        Screen screen = mc.gui.screen();
         if (isSupportedContainer(screen)) {
-            startContainer((HandledScreen<?>) screen);
+            startContainer((AbstractContainerScreen<?>) screen);
         } else {
             notifyUser("Open a chest or shulker with map bundles to begin sorting");
         }
@@ -133,7 +132,7 @@ public final class MapChestSorter extends Module {
         if (!isActive()) return;
         Screen screen = event.screen;
         if (isSupportedContainer(screen)) {
-            startContainer((HandledScreen<?>) screen);
+            startContainer((AbstractContainerScreen<?>) screen);
         } else {
             // Container closed - safely return cursor item, save progress, wait for next chest
             returnCursorItem();
@@ -147,7 +146,7 @@ public final class MapChestSorter extends Module {
 
     @EventHandler
     private void onTick(TickEvent.Post event) {
-        if (!isActive() || mc.player == null || mc.interactionManager == null) return;
+        if (!isActive() || mc.player == null || mc.gameMode == null) return;
         if (state == State.WAIT_FOR_CONTAINER || state == State.WAIT_FOR_EMPTY_BUNDLE || state == State.DONE) return;
 
         if (!contextIsOpen()) {
@@ -174,15 +173,15 @@ public final class MapChestSorter extends Module {
     }
 
     private boolean isSupportedContainer(Screen screen) {
-        return screen instanceof GenericContainerScreen
+        return screen instanceof ContainerScreen
             || screen instanceof ShulkerBoxScreen
-            || screen instanceof Generic3x3ContainerScreen
+            || screen instanceof DispenserScreen
             || screen instanceof HopperScreen;
     }
 
-    private void startContainer(HandledScreen<?> screen) {
+    private void startContainer(AbstractContainerScreen<?> screen) {
         activeScreen = screen;
-        menu = screen.getScreenHandler();
+        menu = screen.getMenu();
 
         if (targetQueue.isEmpty()) {
             state = State.PREPARE_QUEUE;
@@ -238,12 +237,12 @@ public final class MapChestSorter extends Module {
         if (detectedProject == null || maxCol < 0 || maxRow < 0) {
             // Scan container and inventory for map bounds and project name
             for (Slot slot : menu.slots) {
-                ItemStack stack = slot.getStack();
-                if (stack.isOf(Items.BUNDLE)) {
-                    BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
-                    for (ItemStack item : contents.iterate()) {
-                        if (!item.isOf(Items.FILLED_MAP)) continue;
-                        Matcher m = COORDINATE.matcher(net.minecraft.util.Formatting.strip(item.getName().getString()).trim());
+                ItemStack stack = slot.getItem();
+                if (stack.is(Items.BUNDLE)) {
+                    BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
+                    for (ItemStack item : contents.itemCopyStream().toList()) {
+                        if (!item.is(Items.FILLED_MAP)) continue;
+                        Matcher m = COORDINATE.matcher(net.minecraft.ChatFormatting.stripFormatting(item.getHoverName().getString()).trim());
                         if (m.matches()) {
                             String itemProj = m.group(1).trim().toLowerCase(Locale.ROOT);
                             if (detectedProject != null && !itemProj.equals(detectedProject)) continue;
@@ -256,8 +255,8 @@ public final class MapChestSorter extends Module {
                             if (detectedProject == null) detectedProject = itemProj;
                         }
                     }
-                } else if (stack.isOf(Items.FILLED_MAP)) {
-                    Matcher m = COORDINATE.matcher(net.minecraft.util.Formatting.strip(stack.getName().getString()).trim());
+                } else if (stack.is(Items.FILLED_MAP)) {
+                    Matcher m = COORDINATE.matcher(net.minecraft.ChatFormatting.stripFormatting(stack.getHoverName().getString()).trim());
                     if (m.matches()) {
                         String itemProj = m.group(1).trim().toLowerCase(Locale.ROOT);
                         if (detectedProject != null && !itemProj.equals(detectedProject)) continue;
@@ -355,12 +354,12 @@ public final class MapChestSorter extends Module {
             nextActionAt = now;
         } else {
             // Select item inside bundle
-            ItemStack sourceStack = menu.getSlot(currentSourceSlot).getStack();
-            int selected = BundleItem.getSelectedStackIndex(sourceStack);
+            ItemStack sourceStack = menu.getSlot(currentSourceSlot).getItem();
+            int selected = BundleItem.getSelectedItemIndex(sourceStack);
             if (selected != match.bundleItemIndex()) {
-                BundleItem.setSelectedStackIndex(sourceStack, match.bundleItemIndex());
-                if (mc.getNetworkHandler() != null) {
-                    mc.getNetworkHandler().sendPacket(new BundleItemSelectedC2SPacket(currentSourceSlot, match.bundleItemIndex()));
+                BundleItem.toggleSelectedItem(sourceStack, match.bundleItemIndex());
+                if (mc.getConnection() != null) {
+                    mc.getConnection().send(new ServerboundSelectBundleItemPacket(currentSourceSlot, match.bundleItemIndex()));
                 }
             }
             state = State.EXTRACT;
@@ -374,10 +373,10 @@ public final class MapChestSorter extends Module {
     }
 
     private void extractTarget(long now) {
-        if (!menu.getCursorStack().isEmpty()) {
+        if (!menu.getCarried().isEmpty()) {
             // Automatically clear cursor by safely returning held item to inventory
             returnCursorItem();
-            if (!menu.getCursorStack().isEmpty()) {
+            if (!menu.getCarried().isEmpty()) {
                 fail("Inventory full; please clear the item from your cursor");
                 return;
             }
@@ -385,7 +384,7 @@ public final class MapChestSorter extends Module {
             return;
         }
 
-        destinationCountBefore = bundleSize(menu.getSlot(currentDestinationSlot).getStack());
+        destinationCountBefore = bundleSize(menu.getSlot(currentDestinationSlot).getItem());
 
         if (isSourceLooseMap) {
             click(currentSourceSlot, 0); // Pick up loose map with left click
@@ -399,7 +398,7 @@ public final class MapChestSorter extends Module {
     }
 
     private void verifyExtract(long now) {
-        ItemStack carried = menu.getCursorStack();
+        ItemStack carried = menu.getCarried();
         if (matchesTarget(carried, currentTarget)) {
             state = State.INSERT;
             nextActionAt = now;
@@ -424,8 +423,8 @@ public final class MapChestSorter extends Module {
     }
 
     private void verifyInsert(long now) {
-        int count = bundleSize(menu.getSlot(currentDestinationSlot).getStack());
-        if (menu.getCursorStack().isEmpty() && count >= destinationCountBefore + 1) {
+        int count = bundleSize(menu.getSlot(currentDestinationSlot).getItem());
+        if (menu.getCarried().isEmpty() && count >= destinationCountBefore + 1) {
             currentProgressIndex++;
             state = State.FIND_NEXT_MAP;
             nextActionAt = now;
@@ -437,7 +436,7 @@ public final class MapChestSorter extends Module {
             return;
         }
 
-        if (menu.getCursorStack().isEmpty()) {
+        if (menu.getCarried().isEmpty()) {
             // Cursor is empty: the map was accepted by server even if count didn't update in time
             currentProgressIndex++;
             state = State.FIND_NEXT_MAP;
@@ -453,11 +452,11 @@ public final class MapChestSorter extends Module {
     private int findInventoryDestinationSlot() {
         for (int i = 0; i < menu.slots.size(); i++) {
             Slot slot = menu.getSlot(i);
-            if (!(slot.inventory instanceof PlayerInventory)) continue;
-            ItemStack stack = slot.getStack();
+            if (!(slot.container instanceof Inventory)) continue;
+            ItemStack stack = slot.getItem();
             if (!(stack.getItem() instanceof BundleItem)) continue;
 
-            BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+            BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
             if (contents.size() < 64) {
                 return i;
             }
@@ -469,19 +468,19 @@ public final class MapChestSorter extends Module {
         // Priority 1: Search chest / container slots
         for (int i = 0; i < menu.slots.size(); i++) {
             Slot slot = menu.getSlot(i);
-            if (slot.inventory instanceof PlayerInventory) continue; // Skip player inventory for source
+            if (slot.container instanceof Inventory) continue; // Skip player inventory for source
 
-            ItemStack stack = slot.getStack();
+            ItemStack stack = slot.getItem();
             if (stack.getItem() instanceof BundleItem) {
-                BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+                BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
                 int itemIdx = 0;
-                for (ItemStack item : contents.iterate()) {
+                for (ItemStack item : contents.itemCopyStream().toList()) {
                     if (matchesTarget(item, target)) {
                         return new SourceMatch(i, false, itemIdx);
                     }
                     itemIdx++;
                 }
-            } else if (stack.isOf(Items.FILLED_MAP)) {
+            } else if (stack.is(Items.FILLED_MAP)) {
                 if (matchesTarget(stack, target)) {
                     return new SourceMatch(i, true, -1);
                 }
@@ -491,14 +490,14 @@ public final class MapChestSorter extends Module {
         // Priority 2: Also check player inventory bundles if not found in chest
         for (int i = 0; i < menu.slots.size(); i++) {
             Slot slot = menu.getSlot(i);
-            if (!(slot.inventory instanceof PlayerInventory)) continue;
+            if (!(slot.container instanceof Inventory)) continue;
             if (i == currentDestinationSlot) continue; // Don't pull from the current destination bundle
 
-            ItemStack stack = slot.getStack();
-            if (stack.isOf(Items.BUNDLE)) {
-                BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+            ItemStack stack = slot.getItem();
+            if (stack.is(Items.BUNDLE)) {
+                BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
                 int itemIdx = 0;
-                for (ItemStack item : contents.iterate()) {
+                for (ItemStack item : contents.itemCopyStream().toList()) {
                     if (matchesTarget(item, target)) {
                         return new SourceMatch(i, false, itemIdx);
                     }
@@ -511,8 +510,8 @@ public final class MapChestSorter extends Module {
     }
 
     private boolean matchesTarget(ItemStack stack, TargetCoord target) {
-        if (!stack.isOf(Items.FILLED_MAP)) return false;
-        Matcher m = COORDINATE.matcher(net.minecraft.util.Formatting.strip(stack.getName().getString()).trim());
+        if (!stack.is(Items.FILLED_MAP)) return false;
+        Matcher m = COORDINATE.matcher(net.minecraft.ChatFormatting.stripFormatting(stack.getHoverName().getString()).trim());
         if (!m.matches()) return false;
 
         boolean isXY = coordinateFormat.get() == CoordinateFormat.X_Y;
@@ -535,28 +534,28 @@ public final class MapChestSorter extends Module {
     }
 
     private int bundleSize(ItemStack stack) {
-        return stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT).size();
+        return stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY).size();
     }
 
     private void click(int slot, int button) {
-        mc.interactionManager.clickSlot(menu.syncId, slot, button, SlotActionType.PICKUP, mc.player);
+        mc.gameMode.handleContainerInput(menu.containerId, slot, button, ContainerInput.PICKUP, mc.player);
     }
 
     private boolean contextIsOpen() {
         return activeScreen != null
-            && mc.currentScreen == activeScreen
+            && mc.gui.screen() == activeScreen
             && mc.player != null
-            && mc.player.currentScreenHandler == menu;
+            && mc.player.containerMenu == menu;
     }
 
     private void returnCursorItem() {
         if (menu == null || mc.player == null) return;
-        if (menu.getCursorStack().isEmpty()) return;
+        if (menu.getCarried().isEmpty()) return;
 
         // 1. Try to find an empty slot in player inventory first
         for (int i = 0; i < menu.slots.size(); i++) {
             Slot s = menu.getSlot(i);
-            if (s.inventory instanceof PlayerInventory && s.getStack().isEmpty()) {
+            if (s.container instanceof Inventory && s.getItem().isEmpty()) {
                 click(i, 0);
                 return;
             }
@@ -565,7 +564,7 @@ public final class MapChestSorter extends Module {
         // 2. Try original source slot if empty
         if (currentSourceSlot >= 0 && currentSourceSlot < menu.slots.size()) {
             Slot s = menu.getSlot(currentSourceSlot);
-            if (s.getStack().isEmpty()) {
+            if (s.getItem().isEmpty()) {
                 click(currentSourceSlot, 0);
                 return;
             }
@@ -574,7 +573,7 @@ public final class MapChestSorter extends Module {
         // 3. Try any empty slot in the container
         for (int i = 0; i < menu.slots.size(); i++) {
             Slot s = menu.getSlot(i);
-            if (s.getStack().isEmpty()) {
+            if (s.getItem().isEmpty()) {
                 click(i, 0);
                 return;
             }
@@ -595,11 +594,11 @@ public final class MapChestSorter extends Module {
 
     private void notifyUser(String message) {
         if (!localNotifications.get()) return;
-        ChatUtils.sendMsg("Map Chest Sorter", Text.literal(message));
-        mc.getToastManager().add(new SystemToast(
-            SystemToast.Type.PERIODIC_NOTIFICATION,
-            Text.literal("Map Chest Sorter"),
-            Text.literal(message.replaceAll("§[0-9a-fk-or]", ""))
+        ChatUtils.sendMsg("Map Chest Sorter", Component.literal(message));
+        mc.gui.toastManager().addToast(new SystemToast(
+            SystemToast.SystemToastId.PERIODIC_NOTIFICATION,
+            Component.literal("Map Chest Sorter"),
+            Component.literal(message.replaceAll("§[0-9a-fk-or]", ""))
         ));
     }
 

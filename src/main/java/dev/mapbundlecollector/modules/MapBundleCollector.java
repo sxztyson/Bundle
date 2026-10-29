@@ -11,24 +11,24 @@ import meteordevelopment.meteorclient.settings.SettingGroup;
 import meteordevelopment.meteorclient.settings.StringSetting;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.orbit.EventHandler;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.ingame.Generic3x3ContainerScreen;
-import net.minecraft.client.gui.screen.ingame.GenericContainerScreen;
-import net.minecraft.client.gui.screen.ingame.HandledScreen;
-import net.minecraft.client.gui.screen.ingame.HopperScreen;
-import net.minecraft.client.gui.screen.ingame.ShulkerBoxScreen;
-import net.minecraft.component.DataComponentTypes;
-import net.minecraft.component.type.BundleContentsComponent;
-import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.BundleItem;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.BundleItemSelectedC2SPacket;
-import net.minecraft.screen.ScreenHandler;
-import net.minecraft.screen.slot.Slot;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.inventory.ContainerScreen;
+import net.minecraft.client.gui.screens.inventory.DispenserScreen;
+import net.minecraft.client.gui.screens.inventory.HopperScreen;
+import net.minecraft.client.gui.screens.inventory.ShulkerBoxScreen;
+import net.minecraft.core.component.DataComponents;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ServerboundSelectBundleItemPacket;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.BundleItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.BundleContents;
 import org.apache.commons.lang3.math.Fraction;
 
 import java.util.HashSet;
@@ -96,8 +96,8 @@ public final class MapBundleCollector extends Module {
         .build());
 
     private State state = State.IDLE;
-    private HandledScreen<?> activeScreen;
-    private ScreenHandler activeHandler;
+    private AbstractContainerScreen<?> activeScreen;
+    private AbstractContainerMenu activeHandler;
     private long nextActionAt;
     private long verifyDeadline;
 
@@ -115,7 +115,7 @@ public final class MapBundleCollector extends Module {
     public void onActivate() {
         reset();
         state = State.WAIT_FOR_CONTAINER;
-        beginIfSupported(mc.currentScreen);
+        beginIfSupported(mc.gui.screen());
     }
 
     @Override
@@ -164,10 +164,10 @@ public final class MapBundleCollector extends Module {
     }
 
     private boolean beginIfSupported(Screen screen) {
-        if (!(screen instanceof HandledScreen<?> handled) || !isSupported(screen)) return false;
+        if (!(screen instanceof AbstractContainerScreen<?> handled) || !isSupported(screen)) return false;
 
         activeScreen = handled;
-        activeHandler = handled.getScreenHandler();
+        activeHandler = handled.getMenu();
         rejectedBundles.clear();
         state = State.OPEN_DELAY;
         nextActionAt = System.currentTimeMillis() + openDelay.get();
@@ -175,17 +175,17 @@ public final class MapBundleCollector extends Module {
     }
 
     private boolean isSupported(Screen screen) {
-        return screen instanceof GenericContainerScreen
-            || screen instanceof Generic3x3ContainerScreen
+        return screen instanceof ContainerScreen
+            || screen instanceof DispenserScreen
             || screen instanceof ShulkerBoxScreen
             || screen instanceof HopperScreen;
     }
 
     private boolean contextIsStillOpen() {
-        return mc.player != null && mc.interactionManager != null
-            && mc.currentScreen == activeScreen
-            && mc.player.currentScreenHandler == activeHandler
-            && activeScreen.getScreenHandler() == activeHandler;
+        return mc.player != null && mc.gameMode != null
+            && mc.gui.screen() == activeScreen
+            && mc.player.containerMenu == activeHandler
+            && activeScreen.getMenu() == activeHandler;
     }
 
     private void scan() {
@@ -200,29 +200,29 @@ public final class MapBundleCollector extends Module {
 
     private ChestMapTarget findNextChestTarget() {
         for (Slot slot : activeHandler.slots) {
-            if (slot.inventory instanceof PlayerInventory) continue;
-            ItemStack stack = slot.getStack();
+            if (slot.container instanceof Inventory) continue;
+            ItemStack stack = slot.getItem();
 
             // 1. Check loose filled map in chest
-            if (stack.isOf(Items.FILLED_MAP)) {
-                String raw = Formatting.strip(stack.getName().getString()).trim();
+            if (stack.is(Items.FILLED_MAP)) {
+                String raw = ChatFormatting.stripFormatting(stack.getHoverName().getString()).trim();
                 if (matches(raw)) {
                     String proj = extractProjectName(raw);
-                    return new ChestMapTarget(slot.id, false, -1, proj);
+                    return new ChestMapTarget(slot.index, false, -1, proj);
                 }
             }
 
             // 2. Check bundle inside chest
-            if (extractFromChestBundles.get() && stack.getItem() instanceof BundleItem && stack.contains(DataComponentTypes.BUNDLE_CONTENTS)) {
-                BundleContentsComponent contents = stack.get(DataComponentTypes.BUNDLE_CONTENTS);
+            if (extractFromChestBundles.get() && stack.getItem() instanceof BundleItem && stack.has(DataComponents.BUNDLE_CONTENTS)) {
+                BundleContents contents = stack.get(DataComponents.BUNDLE_CONTENTS);
                 if (contents != null && !contents.isEmpty()) {
                     int idx = 0;
-                    for (ItemStack item : contents.iterate()) {
-                        if (item.isOf(Items.FILLED_MAP)) {
-                            String raw = Formatting.strip(item.getName().getString()).trim();
+                    for (ItemStack item : contents.itemCopyStream().toList()) {
+                        if (item.is(Items.FILLED_MAP)) {
+                            String raw = ChatFormatting.stripFormatting(item.getHoverName().getString()).trim();
                             if (matches(raw)) {
                                 String proj = extractProjectName(raw);
-                                return new ChestMapTarget(slot.id, true, idx, proj);
+                                return new ChestMapTarget(slot.index, true, idx, proj);
                             }
                         }
                         idx++;
@@ -235,7 +235,7 @@ public final class MapBundleCollector extends Module {
 
     public static String extractProjectName(String displayName) {
         if (displayName == null || displayName.isEmpty()) return "Map";
-        String clean = Formatting.strip(displayName).trim();
+        String clean = ChatFormatting.stripFormatting(displayName).trim();
 
         Matcher m = GRID_PROJECT_PATTERN.matcher(clean);
         if (m.matches()) {
@@ -282,23 +282,23 @@ public final class MapBundleCollector extends Module {
 
         // 1. Search player inventory for an existing bundle containing maps with same project
         for (Slot slot : activeHandler.slots) {
-            if (!(slot.inventory instanceof PlayerInventory) || rejectedBundles.contains(slot.id)) continue;
-            ItemStack stack = slot.getStack();
+            if (!(slot.container instanceof Inventory) || rejectedBundles.contains(slot.index)) continue;
+            ItemStack stack = slot.getItem();
             if (!(stack.getItem() instanceof BundleItem)) continue;
 
-            BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
-            if (contents.getOccupancy().compareTo(Fraction.ONE) >= 0 || contents.size() >= 64) continue;
+            BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
+            if (contents.weight().result().orElse(Fraction.ONE).compareTo(Fraction.ONE) >= 0 || contents.size() >= 64) continue;
 
             if (contents.isEmpty()) {
-                if (emptyBundleSlot < 0) emptyBundleSlot = slot.id;
+                if (emptyBundleSlot < 0) emptyBundleSlot = slot.index;
                 continue;
             }
 
             if (separateProjects.get()) {
                 boolean hasSameProject = false;
-                for (ItemStack item : contents.iterate()) {
-                    if (item.isOf(Items.FILLED_MAP)) {
-                        String itemProj = extractProjectName(item.getName().getString());
+                for (ItemStack item : contents.itemCopyStream().toList()) {
+                    if (item.is(Items.FILLED_MAP)) {
+                        String itemProj = extractProjectName(item.getHoverName().getString());
                         if (itemProj.equalsIgnoreCase(projectName)) {
                             hasSameProject = true;
                             break;
@@ -306,10 +306,10 @@ public final class MapBundleCollector extends Module {
                     }
                 }
                 if (hasSameProject) {
-                    return slot.id;
+                    return slot.index;
                 }
             } else {
-                return slot.id;
+                return slot.index;
             }
         }
 
@@ -321,12 +321,12 @@ public final class MapBundleCollector extends Module {
         // 3. Fallback: if not separating by project, any receptive bundle works
         if (!separateProjects.get()) {
             for (Slot slot : activeHandler.slots) {
-                if (!(slot.inventory instanceof PlayerInventory) || rejectedBundles.contains(slot.id)) continue;
-                ItemStack stack = slot.getStack();
+                if (!(slot.container instanceof Inventory) || rejectedBundles.contains(slot.index)) continue;
+                ItemStack stack = slot.getItem();
                 if (!(stack.getItem() instanceof BundleItem)) continue;
-                BundleContentsComponent contents = stack.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
-                if (contents.getOccupancy().compareTo(Fraction.ONE) < 0 && contents.size() < 64) {
-                    return slot.id;
+                BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
+                if (contents.weight().result().orElse(Fraction.ONE).compareTo(Fraction.ONE) < 0 && contents.size() < 64) {
+                    return slot.index;
                 }
             }
         }
@@ -338,9 +338,9 @@ public final class MapBundleCollector extends Module {
         if (!contextIsStillOpen()) return;
 
         // Make sure cursor is clear before starting
-        if (!activeHandler.getCursorStack().isEmpty()) {
+        if (!activeHandler.getCarried().isEmpty()) {
             returnCursorItem();
-            if (!activeHandler.getCursorStack().isEmpty()) {
+            if (!activeHandler.getCarried().isEmpty()) {
                 finish("Inventory full; cannot clear cursor item");
                 return;
             }
@@ -357,7 +357,7 @@ public final class MapBundleCollector extends Module {
                 nextActionAt = now + actionDelay.get();
             } else if (movePhase == 1) {
                 // Left click loose map in chest to insert into held bundle
-                mapCountBefore = activeHandler.getSlot(currentTarget.slotId()).getStack().getCount();
+                mapCountBefore = activeHandler.getSlot(currentTarget.slotId()).getItem().getCount();
                 click(currentTarget.slotId(), 0);
                 state = State.VERIFY_LOOSE;
                 verifyDeadline = now + Math.max(1500, actionDelay.get() * 4);
@@ -372,12 +372,12 @@ public final class MapBundleCollector extends Module {
         } else {
             // Case 2: Map is inside a bundle in the chest
             // Select the item index in the chest bundle
-            ItemStack chestBundle = activeHandler.getSlot(currentTarget.slotId()).getStack();
-            int selected = BundleItem.getSelectedStackIndex(chestBundle);
+            ItemStack chestBundle = activeHandler.getSlot(currentTarget.slotId()).getItem();
+            int selected = BundleItem.getSelectedItemIndex(chestBundle);
             if (selected != currentTarget.itemIndex()) {
-                BundleItem.setSelectedStackIndex(chestBundle, currentTarget.itemIndex());
-                if (mc.getNetworkHandler() != null) {
-                    mc.getNetworkHandler().sendPacket(new BundleItemSelectedC2SPacket(currentTarget.slotId(), currentTarget.itemIndex()));
+                BundleItem.toggleSelectedItem(chestBundle, currentTarget.itemIndex());
+                if (mc.getConnection() != null) {
+                    mc.getConnection().send(new ServerboundSelectBundleItemPacket(currentTarget.slotId(), currentTarget.itemIndex()));
                 }
             }
 
@@ -390,7 +390,7 @@ public final class MapBundleCollector extends Module {
     }
 
     private void verifyLoose(long now) {
-        ItemStack cursor = activeHandler.getCursorStack();
+        ItemStack cursor = activeHandler.getCarried();
 
         if (movePhase == 3) {
             // Bundle was returned to its slot
@@ -404,7 +404,7 @@ public final class MapBundleCollector extends Module {
             return;
         }
 
-        ItemStack source = activeHandler.getSlot(currentTarget.slotId()).getStack();
+        ItemStack source = activeHandler.getSlot(currentTarget.slotId()).getItem();
         boolean inserted = source.isEmpty() || source.getCount() < mapCountBefore;
 
         if (!(cursor.getItem() instanceof BundleItem)) {
@@ -419,12 +419,12 @@ public final class MapBundleCollector extends Module {
         } else {
             // Map successfully inserted!
             // Check if there is another loose map of the SAME project in the chest to grab with this bundle
-            BundleContentsComponent contents = cursor.getOrDefault(DataComponentTypes.BUNDLE_CONTENTS, BundleContentsComponent.DEFAULT);
+            BundleContents contents = cursor.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
             ChestMapTarget nextSameProj = findNextChestTarget();
 
             if (nextSameProj != null && !nextSameProj.isBundle()
                 && nextSameProj.projectName().equalsIgnoreCase(currentTarget.projectName())
-                && contents.getOccupancy().compareTo(Fraction.ONE) < 0 && contents.size() < 64) {
+                && contents.weight().result().orElse(Fraction.ONE).compareTo(Fraction.ONE) < 0 && contents.size() < 64) {
                 // Keep bundle on cursor and grab the next map of this project immediately!
                 currentTarget = nextSameProj;
                 movePhase = 1;
@@ -439,8 +439,8 @@ public final class MapBundleCollector extends Module {
     }
 
     private void verifyBundleExtract(long now) {
-        ItemStack carried = activeHandler.getCursorStack();
-        if (carried.isOf(Items.FILLED_MAP)) {
+        ItemStack carried = activeHandler.getCarried();
+        if (carried.is(Items.FILLED_MAP)) {
             // Extracted map is on cursor. Now left click destination inventory bundle to insert
             click(bundleSlot, 0);
             state = State.VERIFY_BUNDLE_INSERT;
@@ -459,7 +459,7 @@ public final class MapBundleCollector extends Module {
     }
 
     private void verifyBundleInsert(long now) {
-        if (activeHandler.getCursorStack().isEmpty()) {
+        if (activeHandler.getCarried().isEmpty()) {
             // Map was successfully deposited into destination bundle!
             state = State.SCAN;
             nextActionAt = now + actionDelay.get();
@@ -477,17 +477,17 @@ public final class MapBundleCollector extends Module {
     }
 
     private void click(int slot, int button) {
-        mc.interactionManager.clickSlot(activeHandler.syncId, slot, button, SlotActionType.PICKUP, mc.player);
+        mc.gameMode.handleContainerInput(activeHandler.containerId, slot, button, ContainerInput.PICKUP, mc.player);
     }
 
     private void returnCursorItem() {
         if (activeHandler == null || mc.player == null) return;
-        if (activeHandler.getCursorStack().isEmpty()) return;
+        if (activeHandler.getCarried().isEmpty()) return;
 
         // 1. Try to return to original bundle slot if empty
         if (bundleSlot >= 0 && bundleSlot < activeHandler.slots.size()) {
             Slot s = activeHandler.getSlot(bundleSlot);
-            if (s.getStack().isEmpty()) {
+            if (s.getItem().isEmpty()) {
                 click(bundleSlot, 0);
                 return;
             }
@@ -496,7 +496,7 @@ public final class MapBundleCollector extends Module {
         // 2. Try any empty player inventory slot
         for (int i = 0; i < activeHandler.slots.size(); i++) {
             Slot s = activeHandler.getSlot(i);
-            if (s.inventory instanceof PlayerInventory && s.getStack().isEmpty()) {
+            if (s.container instanceof Inventory && s.getItem().isEmpty()) {
                 click(i, 0);
                 return;
             }
@@ -505,7 +505,7 @@ public final class MapBundleCollector extends Module {
         // 3. Try any empty container slot
         for (int i = 0; i < activeHandler.slots.size(); i++) {
             Slot s = activeHandler.getSlot(i);
-            if (s.getStack().isEmpty()) {
+            if (s.getItem().isEmpty()) {
                 click(i, 0);
                 return;
             }
@@ -519,9 +519,9 @@ public final class MapBundleCollector extends Module {
     }
 
     private void showLocalNotification(String message) {
-        mc.getToastManager().add(new net.minecraft.client.toast.SystemToast(
-            net.minecraft.client.toast.SystemToast.Type.PERIODIC_NOTIFICATION,
-            Text.literal("Map Bundle Collector"), Text.literal(message)
+        mc.gui.toastManager().addToast(new net.minecraft.client.gui.components.toasts.SystemToast(
+            net.minecraft.client.gui.components.toasts.SystemToast.SystemToastId.PERIODIC_NOTIFICATION,
+            Component.literal("Map Bundle Collector"), Component.literal(message)
         ));
     }
 
