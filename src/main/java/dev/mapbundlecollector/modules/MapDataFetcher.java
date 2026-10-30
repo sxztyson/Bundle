@@ -80,7 +80,7 @@ public final class MapDataFetcher {
         REINSERT_WAVE,
         REINSERT_VERIFY,
         VERIFY_BUNDLE,
-        RESOLVE_CURSOR
+        RESYNC
     }
 
     // Why the bundle is being parked back on its chest slot.
@@ -223,6 +223,13 @@ public final class MapDataFetcher {
     // the bundle aborts with a clear message instead of thrashing.
     private int bundleAdoptions;
 
+    // Universal per-chest recovery (RESYNC): nothing but completion or the container
+    // closing may end a chest run. Map ids that were already loose in the player inventory
+    // BEFORE the run started are never touched by recovery stashing.
+    private int resyncCount;
+    private int stashIndex;
+    private final Set<Integer> preRunInventoryMapIds = new HashSet<>();
+
     public MapDataFetcher(MapArtManager manager, Consumer<String> feedback) {
         this.manager = manager;
         this.feedback = feedback;
@@ -278,7 +285,7 @@ public final class MapDataFetcher {
             case REINSERT_WAVE -> reinsertWave(params, now);
             case REINSERT_VERIFY -> reinsertVerify(params, now);
             case VERIFY_BUNDLE -> verifyBundle(now);
-            case RESOLVE_CURSOR -> resolveCursor(params, now);
+            case RESYNC -> resync(params, now);
             default -> { }
         }
     }
@@ -405,6 +412,16 @@ public final class MapDataFetcher {
         bundles.clear();
         chestBundleCount = 0;
         unfetchableCount = 0;
+        resyncCount = 0;
+        // Attribute loose maps: anything already loose before the first click is the
+        // player's, not ours - recovery stashing must never move it.
+        preRunInventoryMapIds.clear();
+        for (int i = 0; i < menu.slots.size(); i++) {
+            Slot slot = menu.getSlot(i);
+            if (!(slot.container instanceof Inventory)) continue;
+            Integer mapId = mapIdOf(slot.getItem());
+            if (mapId != null) preRunInventoryMapIds.add(mapId);
+        }
         int toFetch = 0;
         int alreadyCached = 0;
 
@@ -606,6 +623,9 @@ public final class MapDataFetcher {
         abortedCount = 0;
         unfetchableCount = 0;
         vacuumedCount = 0;
+        resyncCount = 0;
+        stashIndex = -1;
+        preRunInventoryMapIds.clear();
         preContents = null;
         remaining = null;
         remainingEntries = 0;
@@ -640,16 +660,26 @@ public final class MapDataFetcher {
     private void planWave(Params params, long now) {
         MapArtCache cache = manager.getCache();
         ItemStack bundleStack = currentBundleStack();
-        if (!(bundleStack.getItem() instanceof BundleItem) || !contentMultiset(bundleStack).equals(preContents)) {
-            if (bundleCarried) {
-                startResolve("carried bundle contents changed between waves");
+        if (!contentMultiset(bundleStack).equals(preContents)) {
+            if (!(bundleStack.getItem() instanceof BundleItem)) {
+                if (bundleCarried) {
+                    startResolve("carried stack is no longer the bundle between waves");
+                } else {
+                    feedback.accept("§eBundle in slot " + bundleSlot + " is gone — skipped.");
+                    abortedCount++;
+                    bundleIndex++;
+                    startNextBundle(now);
+                }
                 return;
             }
-            feedback.accept("§eBundle in slot " + bundleSlot + " changed since the scan — skipped.");
-            abortedCount++;
-            bundleIndex++;
-            startNextBundle(now);
-            return;
+            // Another module reshuffled the bundle (moved maps in/out). Re-base every
+            // expectation to the ACTUAL contents and keep going — the goal is captured
+            // map data, and planWave re-reads reality each wave anyway.
+            debug("plan: bundle contents changed externally — rebasing (entries "
+                + contents(bundleStack).size() + ", was " + remainingEntries + ")");
+            preContents = contentMultiset(bundleStack);
+            remaining = new HashMap<>(preContents);
+            remainingEntries = contents(bundleStack).size();
         }
 
         List<ItemStack> entries = contents(bundleStack).itemCopyStream().toList();
@@ -819,16 +849,18 @@ public final class MapDataFetcher {
                 return;
             }
             ItemStack chestStack = menu.getSlot(bundleSlot).getItem();
-            if (!(chestStack.getItem() instanceof BundleItem) || !contentMultiset(chestStack).equals(remaining)) {
-                if (p2Wave && !ejected.isEmpty()) {
-                    startResolve("bundle in slot " + bundleSlot + " changed before the reinsert pickup");
-                    return;
-                }
-                feedback.accept("§eBundle in slot " + bundleSlot + " changed — skipped.");
+            if (!(chestStack.getItem() instanceof BundleItem)) {
+                feedback.accept("§eBundle in slot " + bundleSlot + " is gone — skipped.");
                 abortedCount++;
                 bundleIndex++;
                 startNextBundle(now);
                 return;
+            }
+            if (!contentMultiset(chestStack).equals(remaining)) {
+                // External reshuffle again: adopt the actual contents for the pickup verify.
+                debug("take: bundle contents changed externally — rebasing before pickup");
+                remaining = contentMultiset(chestStack);
+                remainingEntries = contents(chestStack).size();
             }
             click(bundleSlot, 0);
             phase = 1;
@@ -853,6 +885,220 @@ public final class MapDataFetcher {
             return;
         }
         startResolve("taking the bundle from slot " + bundleSlot + " was not confirmed");
+    }
+
+    // ------------------------------------------------------------------ universal recovery
+
+    // Nothing but completion, the 30-recovery cap, or the container closing may end a
+    // chest run. Any anomaly lands here; startRewind's unwind still runs first when the
+    // wave state is confirmed (it restores the bundle), everything else comes straight.
+    private void startResync(String reason) {
+        debug("resync: " + reason + " (recovery #" + (resyncCount + 1) + " this chest)");
+        resyncCount++;
+        if (resyncCount > 30) {
+            feedback.accept("§cStopped this chest after 30 recoveries - something is persistently fighting the fetcher. See fetcher.log.");
+            abortNoClicks("too many recoveries");
+            return;
+        }
+        feedback.accept("§eRecovering: " + reason + " — continuing automatically.");
+        wavePlan.clear();
+        ejected.clear();
+        usedWaveSlots.clear();
+        stolen.clear();
+        bundleAdoptions = 0;
+        aborting = false;
+        abortReason = "";
+        continueAfterRewind = false;
+        bundleCarried = false;
+        remaining = null;
+        remainingEntries = 0;
+        pendingSlot = -1;
+        stashIndex = -1;
+        state = State.RESYNC;
+        phase = 0;
+        nextActionAt = System.currentTimeMillis();
+    }
+
+    // Phase 0/1: park the cursor into a verified-empty slot (patient - waits for room
+    // rather than stopping). Phase 2/3/5/6: when free-slot pressure builds, stash OUR
+    // loose maps (never the player's pre-run ones) into empty chest slots so waves always
+    // have room. Phase 4: rebuild the chest plan from ACTUAL server state and continue
+    // from the top - already-fetched bundles skip without clicks.
+    private void resync(Params params, long now) {
+        if (phase <= 1) {
+            ItemStack carried = menu.getCarried();
+            if (carried.isEmpty()) {
+                phase = 2;
+                nextActionAt = now;
+                return;
+            }
+            int slot = verifiedPlacementSlot(carried);
+            if (slot < 0) {
+                if (now >= verifyDeadline) {
+                    feedback.accept("§eCursor holds " + describeStack(carried)
+                        + " with no empty slot - waiting for room, then continuing.");
+                    verifyDeadline = now + 10_000;
+                }
+                nextActionAt = now + 250;
+                return;
+            }
+            if (phase == 0) {
+                click(slot, 0);
+                pendingSlot = slot;
+                phase = 1;
+                verifyDeadline = now + verifyTimeout(params);
+                nextActionAt = now + params.clickIntervalMs();
+                return;
+            }
+            if (menu.getCarried().isEmpty() && !menu.getSlot(pendingSlot).getItem().isEmpty()) {
+                phase = 2;
+                nextActionAt = now;
+            } else if (now >= verifyDeadline) {
+                phase = 0;
+                nextActionAt = now + 250;
+            } else {
+                nextActionAt = now + VERIFY_POLL_MS;
+            }
+            return;
+        }
+
+        if (phase == 2) {
+            if (freeInventorySlots().size() >= Math.max(MIN_FREE_SLOTS, Math.min(params.batchSize(), 12))
+                || ourLooseMaps().isEmpty() || emptyChestSlot() < 0) {
+                phase = 4;
+                nextActionAt = now;
+                return;
+            }
+            stashIndex = 0;
+            phase = 3;
+            nextActionAt = now;
+            return;
+        }
+
+        if (phase == 3) {
+            int invSlot = nextOurLooseMap();
+            if (invSlot < 0 || emptyChestSlot() < 0) {
+                phase = 4;
+                nextActionAt = now;
+                return;
+            }
+            if (!menu.getCarried().isEmpty()) {
+                phase = 0; // unexpected cursor content: park it first
+                nextActionAt = now;
+                return;
+            }
+            click(invSlot, 0);
+            pendingSlot = invSlot;
+            p2Index = emptyChestSlot();
+            phase = 5;
+            verifyDeadline = now + verifyTimeout(params);
+            nextActionAt = now + params.clickIntervalMs();
+            return;
+        }
+
+        if (phase == 5) {
+            if (!menu.getSlot(pendingSlot).getItem().isEmpty() && menu.getCarried().isEmpty()) {
+                phase = 3; // pickup did not take; re-select
+                nextActionAt = now + 250;
+                return;
+            }
+            if (!menu.getCarried().isEmpty() && menu.getSlot(pendingSlot).getItem().isEmpty()) {
+                click(p2Index, 0);
+                phase = 6;
+                verifyDeadline = now + verifyTimeout(params);
+                nextActionAt = now + params.clickIntervalMs();
+                return;
+            }
+            if (now >= verifyDeadline) {
+                phase = 0;
+                nextActionAt = now + 250;
+            } else {
+                nextActionAt = now + VERIFY_POLL_MS;
+            }
+            return;
+        }
+
+        if (phase == 6) {
+            if (menu.getCarried().isEmpty() && !menu.getSlot(p2Index).getItem().isEmpty()) {
+                phase = 3;
+                nextActionAt = now;
+                return;
+            }
+            if (now >= verifyDeadline) {
+                phase = 0;
+                nextActionAt = now + 250;
+            } else {
+                nextActionAt = now + VERIFY_POLL_MS;
+            }
+            return;
+        }
+
+        // phase 4: rebuild the chest plan from actual state and continue from the top.
+        MapArtCache cache = manager.getCache();
+        if (cache == null) {
+            abortNoClicks("map cache unavailable");
+            return;
+        }
+        bundles.clear();
+        chestBundleCount = 0;
+        int unknownTotal = 0;
+        for (int i = 0; i < menu.slots.size(); i++) {
+            Slot slot = menu.getSlot(i);
+            if (slot.container instanceof Inventory) continue;
+            ItemStack stack = slot.getItem();
+            if (!(stack.getItem() instanceof BundleItem)) continue;
+            boolean hasMaps = false;
+            for (ItemStack item : contents(stack).itemCopyStream().toList()) {
+                if (item.is(Items.FILLED_MAP)) {
+                    hasMaps = true;
+                    break;
+                }
+            }
+            if (!hasMaps) continue;
+            chestBundleCount++;
+            int unknown = toFetchPerBundle(stack, cache);
+            if (unknown > 0) {
+                bundles.add(new BundlePlan(i, contentMultiset(stack)));
+                unknownTotal += unknown;
+            }
+        }
+        debug("resync replan: bundles=" + chestBundleCount + " withUnknown=" + bundles.size()
+            + " unknownTotal=" + unknownTotal);
+        if (bundles.isEmpty()) {
+            finishChest();
+            return;
+        }
+        bundleIndex = 0;
+        startNextBundle(now);
+    }
+
+    // Loose filled maps in the player inventory that THIS run ejected (their map ids were
+    // not loose before the run started); the player's own maps are never touched.
+    private List<Integer> ourLooseMaps() {
+        List<Integer> slots = new ArrayList<>();
+        for (int i = 0; i < menu.slots.size(); i++) {
+            Slot slot = menu.getSlot(i);
+            if (!(slot.container instanceof Inventory)) continue;
+            Integer mapId = mapIdOf(slot.getItem());
+            if (mapId == null || preRunInventoryMapIds.contains(mapId)) continue;
+            slots.add(i);
+        }
+        return slots;
+    }
+
+    private int nextOurLooseMap() {
+        for (int slot : ourLooseMaps()) {
+            if (!menu.getSlot(slot).getItem().isEmpty()) return slot;
+        }
+        return -1;
+    }
+
+    private int emptyChestSlot() {
+        for (int i = 0; i < menu.slots.size(); i++) {
+            Slot slot = menu.getSlot(i);
+            if (!(slot.container instanceof Inventory) && slot.getItem().isEmpty()) return i;
+        }
+        return -1;
     }
 
     // True if a wave map's content key is present inside any chest-side bundle (it was
@@ -895,8 +1141,8 @@ public final class MapDataFetcher {
     // bundleSlot was updated to its location; the caller re-picks it up and continues.
     private boolean tryAdoptParkedBundle() {
         if (++bundleAdoptions > 5) {
-            feedback.accept("\u00a7cAnother module keeps taking the bundle mid-wave (5 recoveries) - disable it while fetching. Stopping this chest.");
-            debug("bundle theft recovery limit hit - aborting chest");
+            feedback.accept("§eAnother module keeps taking this bundle (5x) — moving on, will retry it via re-scan.");
+            debug("bundle theft limit hit for this wave - continuing via resync");
             return false;
         }
         Map<String, Integer> expected = expectedCarriedDuringReinsert();
@@ -1482,8 +1728,39 @@ public final class MapDataFetcher {
             nextActionAt = now + VERIFY_POLL_MS;
             return;
         }
-        // Boundary mismatch: park whatever the bundle actually holds and let VERIFY_BUNDLE
-        // report the real diff.
+        boolean noLoose = true;
+        for (LooseMap map : ejected) {
+            if (!menu.getSlot(map.slot).getItem().isEmpty()) {
+                noLoose = false;
+                break;
+            }
+        }
+        if (noLoose && carried.getItem() instanceof BundleItem) {
+            // Nothing is loose and the cursor holds a bundle: an external module reshuffled
+            // the contents (maps vacuumed into other bundles / foreign maps inserted). The
+            // fetch goal is unaffected — re-base to the actual bundle and CONTINUE the
+            // chest; exact bundle state is unenforceable in a hostile inventory.
+            debug("reinsert boundary mismatch with nothing loose — rebasing bundle contents ("
+                + contents(carried).size() + " entries) and continuing");
+            preContents = contentMultiset(carried);
+            remaining = new HashMap<>(preContents);
+            remainingEntries = contents(carried).size();
+            if (aborting) {
+                parkPurpose = ParkPurpose.ABORT;
+            } else if (p2Wave) {
+                parkPurpose = ParkPurpose.RESUME;
+            } else {
+                state = State.WAVE_PLAN;
+                phase = 0;
+                nextActionAt = now;
+                return;
+            }
+            state = State.PARK_BUNDLE;
+            phase = 0;
+            nextActionAt = now;
+            return;
+        }
+        // Loose maps remain unaccounted for: that is a real unwind (no-drop rule).
         aborting = true;
         if (abortReason.isEmpty()) abortReason = "reinsert batch was not confirmed";
         parkPurpose = ParkPurpose.ABORT;
@@ -1518,10 +1795,8 @@ public final class MapDataFetcher {
                 return;
             }
             if (aborting) {
-                feedback.accept("§cAborted: " + abortReason + " — bundle in slot " + bundleSlot
-                    + " restored intact.");
-                abortedCount++;
-                finishChest();
+                feedback.accept("§e" + abortReason + " — bundle restored intact; re-planning and continuing.");
+                startResync("wave unwind: " + abortReason);
                 return;
             }
             // Loop: plan the next wave on the same bundle; planWave advances only when the
@@ -1534,15 +1809,14 @@ public final class MapDataFetcher {
             + (leftovers.isEmpty() ? "no loose maps" : "still loose: " + String.join(", ", leftovers));
         if (aborting) {
             debug("verify-fail (aborting): " + abortReason + " — " + detail);
-            feedback.accept("§cAborted: " + abortReason + " — rewind incomplete (" + detail
-                + "). Bundle left in chest slot " + bundleSlot + "; NOT clicking further.");
+            feedback.accept("§e" + abortReason + " — rewind incomplete (" + detail
+                + "). Recovering and continuing the chest.");
         } else {
             debug("verify-fail after wave: " + detail);
-            feedback.accept("§cVerify failed after wave (" + detail + "). Bundle left in chest slot "
-                + bundleSlot + "; NOT clicking further.");
+            feedback.accept("§eVerify after wave: " + detail + ". Recovering and continuing the chest.");
         }
         abortedCount++;
-        finishChest();
+        startResync("verify: " + detail);
     }
 
     // ------------------------------------------------------------------ abort paths
@@ -1582,71 +1856,11 @@ public final class MapDataFetcher {
     // is empty or the deadline passes; then a full report and stop. Never re-clicks a slot
     // whose expected effect was not confirmed.
     private void startResolve(String reason) {
-        debug("resolve: " + reason);
-        aborting = true;
-        abortReason = reason;
-        state = State.RESOLVE_CURSOR;
-        phase = 0;
-        nextActionAt = System.currentTimeMillis();
-        verifyDeadline = System.currentTimeMillis() + 15_000;
+        // Cursor-first universal recovery: RESYNC parks the cursor safely, stashes our
+        // loose maps if needed, re-plans the chest from actual state, and continues.
+        startResync(reason);
     }
 
-    private void resolveCursor(Params params, long now) {
-        ItemStack carried = menu.getCarried();
-        if (carried.isEmpty()) {
-            reportResolved();
-            return;
-        }
-        if (now >= verifyDeadline) {
-            feedback.accept("§cAborted: " + abortReason + " — could not resolve the cursor; "
-                + describeStack(carried) + " remains ON THE CURSOR. " + looseReport() + " Stopped clicking.");
-            abortedCount++;
-            finishChest();
-            return;
-        }
-        int slot = verifiedPlacementSlot(carried);
-        if (slot < 0) {
-            feedback.accept("§cAborted: " + abortReason + " — no confirmed empty slot for "
-                + describeStack(carried) + "; it remains ON THE CURSOR. " + looseReport() + " Stopped clicking.");
-            abortedCount++;
-            finishChest();
-            return;
-        }
-        click(slot, 0);
-        nextActionAt = now + params.clickIntervalMs();
-    }
-
-    private void reportResolved() {
-        feedback.accept("§cAborted: " + abortReason + " — cursor resolved. " + describeBundleLocation()
-            + ". " + looseReport());
-        abortedCount++;
-        finishChest();
-    }
-
-    private void markLooseLost(LooseMap map, String detail) {
-        map.settled = true; // do not retry this slot; reported by verifyBundle/looseReport
-        stolen.add(map);
-        if (!aborting) {
-            aborting = true;
-            abortReason = detail;
-        }
-        reinsertIndex--;
-        nextActionAt = System.currentTimeMillis();
-    }
-
-    private void abortNoClicks(String reason) {
-        debug("abort-no-clicks: " + reason + " " + looseReport());
-        feedback.accept("§cAborted (" + reason + "): " + describeBundleLocation() + ", "
-            + looseReport() + " No further clicks; fetched " + fetchedCount + " maps.");
-        abortedCount++;
-        resetChest();
-        state = State.WAITING;
-    }
-
-    // ------------------------------------------------------------------ shared helpers
-
-    // Preference for a carried BUNDLE: original chest slot, then any empty chest slot, then
-    // the inventory. Anything else prefers inventory slots first (repo ladder order).
     private int verifiedPlacementSlot(ItemStack carried) {
         if (carried.getItem() instanceof BundleItem) {
             if (isSlotEmpty(bundleSlot)) return bundleSlot;
@@ -1769,6 +1983,26 @@ public final class MapDataFetcher {
         Integer mapId = mapIdOf(stack);
         return ChatFormatting.stripFormatting(stack.getHoverName().getString()).trim()
             + " x" + stack.getCount() + (mapId == null ? "" : " (map #" + mapId + ")");
+    }
+
+    private void markLooseLost(LooseMap map, String detail) {
+        map.settled = true; // do not retry this slot; reported by verifyBundle/looseReport
+        stolen.add(map);
+        if (!aborting) {
+            aborting = true;
+            abortReason = detail;
+        }
+        reinsertIndex--;
+        nextActionAt = System.currentTimeMillis();
+    }
+
+    private void abortNoClicks(String reason) {
+        debug("abort-no-clicks: " + reason + " " + looseReport());
+        feedback.accept("§cAborted (" + reason + "): " + describeBundleLocation() + ", "
+            + looseReport() + " No further clicks; fetched " + fetchedCount + " maps.");
+        abortedCount++;
+        resetChest();
+        state = State.WAITING;
     }
 
     private String describeBundleLocation() {
