@@ -97,6 +97,13 @@ public final class MapChestSorter extends Module {
     private int currentProgressIndex = 0;
     private String detectedProject = null;
 
+    // Coordinates already sorted (kept across chests until the full queue is done) and
+    // per-coordinate failure counts so a stuck map is skipped with a report after 3 tries
+    // instead of stopping the whole run.
+    private final java.util.Set<String> doneCoords = new java.util.HashSet<>();
+    private final java.util.Map<String, Integer> coordFailures = new java.util.HashMap<>();
+    private int cursorRetries;
+
     private int currentSourceSlot = -1;
     private int currentDestinationSlot = -1;
     private int destinationCountBefore = 0;
@@ -322,30 +329,37 @@ public final class MapChestSorter extends Module {
     }
 
     private void findNextMap(long now) {
-        if (currentProgressIndex >= targetQueue.size()) {
+        if (doneCoords.size() >= targetQueue.size()) {
             finish("All " + targetQueue.size() + " maps successfully sorted across containers!");
             return;
         }
 
-        currentTarget = targetQueue.get(currentProgressIndex);
+        // Drain THIS chest completely: work through the queue in order, skipping
+        // coordinates that are not present here (they stay pending for a later chest)
+        // instead of stopping at the first missing one.
+        int presentIndex = findNextPresentIndex();
+        if (presentIndex < 0) {
+            state = State.WAIT_FOR_CONTAINER;
+            int remaining = targetQueue.size() - doneCoords.size();
+            notifyUser("§eNothing more from this chest. " + remaining + " map(s) still pending (first: "
+                + formatCoord(firstPending()) + ") - open the next chest/shulker.");
+            return;
+        }
+        currentProgressIndex = presentIndex;
+        currentTarget = targetQueue.get(presentIndex);
+        cursorRetries = 0;
 
-        // 1. Check if player has an empty or receptive bundle in inventory
+        // Destination: a bundle of the SAME project, or an empty one - never a foreign
+        // project's bundle (that is the sun-into-moon mixing bug).
         currentDestinationSlot = findInventoryDestinationSlot();
         if (currentDestinationSlot < 0) {
             state = State.WAIT_FOR_EMPTY_BUNDLE;
-            notifyUser("§eInventory bundle is full! Store filled bundle and put fresh empty bundle in inventory.");
+            notifyUser("§eNo bundle with space for project '" + detectedProject
+                + "'! Store filled bundle(s) and put a fresh empty bundle in inventory.");
             return;
         }
 
-        // 2. Search container (chest/shulker) and inventory for currentTarget
         SourceMatch match = findMap(currentTarget);
-        if (match == null) {
-            state = State.WAIT_FOR_CONTAINER;
-            notifyUser("§eMap " + formatCoord(currentTarget) + " (" + (currentProgressIndex + 1) + "/" + targetQueue.size()
-                + ") not in this chest. Open next chest/shulker.");
-            return;
-        }
-
         currentSourceSlot = match.slot();
         isSourceLooseMap = match.isLoose();
 
@@ -367,6 +381,41 @@ public final class MapChestSorter extends Module {
         }
     }
 
+    // First queue entry (in order) that is not done yet AND is present in the open
+    // container; -1 when this chest holds nothing more for the queue.
+    private int findNextPresentIndex() {
+        for (int i = 0; i < targetQueue.size(); i++) {
+            if (doneCoords.contains(coordKey(targetQueue.get(i)))) continue;
+            if (findMap(targetQueue.get(i)) != null) return i;
+        }
+        return -1;
+    }
+
+    private TargetCoord firstPending() {
+        for (TargetCoord coord : targetQueue) {
+            if (!doneCoords.contains(coordKey(coord))) return coord;
+        }
+        return targetQueue.getFirst();
+    }
+
+    private static String coordKey(TargetCoord coord) {
+        return coord.col() + "_" + coord.row();
+    }
+
+    // Retry-or-skip on extraction/insertion failures: a map that keeps failing is reported
+    // and marked done so the run continues; nothing but real user action stops the sort.
+    private void retryOrSkip(String what) {
+        String key = coordKey(currentTarget);
+        int failures = coordFailures.merge(key, 1, Integer::sum);
+        if (failures >= 3) {
+            doneCoords.add(key);
+            notifyUser("§eSkipped " + formatCoord(currentTarget) + " after " + failures
+                + " failed " + what + " attempts - it stays pending, retry on the next chest.");
+        }
+        state = State.FIND_NEXT_MAP;
+        nextActionAt = System.currentTimeMillis() + actionDelay.get();
+    }
+
     private void selectTarget(long now) {
         state = State.EXTRACT;
         nextActionAt = now;
@@ -377,11 +426,27 @@ public final class MapChestSorter extends Module {
             // Automatically clear cursor by safely returning held item to inventory
             returnCursorItem();
             if (!menu.getCarried().isEmpty()) {
-                fail("Inventory full; please clear the item from your cursor");
+                if (++cursorRetries < 10) {
+                    nextActionAt = now + actionDelay.get();
+                    return;
+                }
+                retryOrSkip("cursor-clear");
                 return;
             }
+            cursorRetries = 0;
             nextActionAt = now + actionDelay.get();
             return;
+        }
+
+        // The destination may have changed hands (another module, filled up) since it was
+        // chosen - re-validate or re-pick BEFORE extracting anything onto the cursor.
+        if (!destinationStillValid(currentDestinationSlot)) {
+            currentDestinationSlot = findInventoryDestinationSlot();
+            if (currentDestinationSlot < 0) {
+                state = State.WAIT_FOR_EMPTY_BUNDLE;
+                notifyUser("§eDestination bundle vanished or filled - put a fresh empty bundle in inventory.");
+                return;
+            }
         }
 
         destinationCountBefore = bundleSize(menu.getSlot(currentDestinationSlot).getItem());
@@ -400,6 +465,7 @@ public final class MapChestSorter extends Module {
     private void verifyExtract(long now) {
         ItemStack carried = menu.getCarried();
         if (matchesTarget(carried, currentTarget)) {
+            cursorRetries = 0;
             state = State.INSERT;
             nextActionAt = now;
             return;
@@ -410,12 +476,25 @@ public final class MapChestSorter extends Module {
             return;
         }
 
-        // Extraction timed out - safely return whatever is on the cursor
+        // Extraction timed out or popped the wrong entry - return whatever is on the
+        // cursor and retry; after repeated failures the coordinate is skipped with a
+        // report so the chest keeps sorting.
         returnCursorItem();
-        fail("Map extraction timed out / was rejected; sorting paused safely");
+        retryOrSkip("extraction");
     }
 
     private void insertTarget(long now) {
+        // Final guard right before the click: never insert into a foreign project's bundle.
+        if (!destinationStillValid(currentDestinationSlot)) {
+            currentDestinationSlot = findInventoryDestinationSlot();
+            if (currentDestinationSlot < 0) {
+                returnCursorItem();
+                state = State.WAIT_FOR_EMPTY_BUNDLE;
+                notifyUser("§eDestination bundle vanished or filled - map returned safely; put a fresh empty bundle in inventory.");
+                return;
+            }
+            destinationCountBefore = bundleSize(menu.getSlot(currentDestinationSlot).getItem());
+        }
         click(currentDestinationSlot, 0); // Left click bundle with carried map
         state = State.VERIFY_INSERT;
         verifyDeadline = now + Math.max(1500, actionDelay.get() * 4);
@@ -425,7 +504,8 @@ public final class MapChestSorter extends Module {
     private void verifyInsert(long now) {
         int count = bundleSize(menu.getSlot(currentDestinationSlot).getItem());
         if (menu.getCarried().isEmpty() && count >= destinationCountBefore + 1) {
-            currentProgressIndex++;
+            doneCoords.add(coordKey(currentTarget));
+            coordFailures.remove(coordKey(currentTarget));
             state = State.FIND_NEXT_MAP;
             nextActionAt = now;
             return;
@@ -438,30 +518,75 @@ public final class MapChestSorter extends Module {
 
         if (menu.getCarried().isEmpty()) {
             // Cursor is empty: the map was accepted by server even if count didn't update in time
-            currentProgressIndex++;
+            doneCoords.add(coordKey(currentTarget));
+            coordFailures.remove(coordKey(currentTarget));
             state = State.FIND_NEXT_MAP;
             nextActionAt = now;
             return;
         }
 
-        // Return uninserted map safely to inventory so it never drops on ground
+        // Return uninserted map safely to inventory so it never drops on ground, then
+        // retry (or skip after repeated failures) instead of stopping the sort.
         returnCursorItem();
-        fail("The destination bundle could not accept the map (returned safely)");
+        retryOrSkip("insertion");
     }
 
+    // Destination selection is PROJECT-AWARE: a map may only ever land in a bundle that is
+    // empty or already holds maps of the SAME project. Without this, sun_25x30 maps end up
+    // inside the moon_11x10 bundle whenever that one happens to have room first.
     private int findInventoryDestinationSlot() {
+        int emptyBundle = -1;
         for (int i = 0; i < menu.slots.size(); i++) {
             Slot slot = menu.getSlot(i);
             if (!(slot.container instanceof Inventory)) continue;
             ItemStack stack = slot.getItem();
             if (!(stack.getItem() instanceof BundleItem)) continue;
+            if (bundleSize(stack) >= 64) continue;
 
-            BundleContents contents = stack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
-            if (contents.size() < 64) {
+            String project = bundleProject(stack);
+            if (project == null) {
+                // Empty bundle: a valid fresh destination, but an existing same-project
+                // bundle always wins so a project never spreads across bundles.
+                if (emptyBundle < 0) emptyBundle = i;
+            } else if (detectedProject == null || project.equals(detectedProject)) {
                 return i;
             }
+            // Else: a DIFFERENT project's bundle or a mixed bundle - never a destination.
         }
-        return -1;
+        return emptyBundle;
+    }
+
+    // The project a bundle belongs to, from its maps' name prefixes: null when empty,
+    // MIXED_BUNDLE when it holds maps of several projects (or non-map items) - neither
+    // may ever receive a foreign map.
+    private static final String MIXED_BUNDLE = "\0mixed";
+
+    private String bundleProject(ItemStack bundleStack) {
+        String project = null;
+        for (ItemStack item : bundleStack.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY).itemCopyStream().toList()) {
+            if (!item.is(Items.FILLED_MAP)) return MIXED_BUNDLE;
+            Matcher m = COORDINATE.matcher(net.minecraft.ChatFormatting.stripFormatting(item.getHoverName().getString()).trim());
+            if (!m.matches()) return MIXED_BUNDLE;
+            String p = m.group(1).trim().toLowerCase(Locale.ROOT);
+            if (project == null) {
+                project = p;
+            } else if (!project.equals(p)) {
+                return MIXED_BUNDLE;
+            }
+        }
+        return project;
+    }
+
+    // Re-checked right before the insert click: the slot may have changed hands (another
+    // module, a full bundle) since it was chosen.
+    private boolean destinationStillValid(int slotIndex) {
+        if (slotIndex < 0 || slotIndex >= menu.slots.size()) return false;
+        Slot slot = menu.getSlot(slotIndex);
+        if (!(slot.container instanceof Inventory)) return false;
+        ItemStack stack = slot.getItem();
+        if (!(stack.getItem() instanceof BundleItem) || bundleSize(stack) >= 64) return false;
+        String project = bundleProject(stack);
+        return project == null || detectedProject == null || project.equals(detectedProject);
     }
 
     private SourceMatch findMap(TargetCoord target) {
@@ -609,6 +734,9 @@ public final class MapChestSorter extends Module {
         targetQueue.clear();
         currentProgressIndex = 0;
         detectedProject = null;
+        doneCoords.clear();
+        coordFailures.clear();
+        cursorRetries = 0;
         currentSourceSlot = -1;
         currentDestinationSlot = -1;
         destinationCountBefore = 0;
