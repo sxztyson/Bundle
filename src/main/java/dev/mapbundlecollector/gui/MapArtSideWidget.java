@@ -17,9 +17,7 @@ import net.minecraft.client.gui.navigation.FocusNavigationEvent;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
-import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
@@ -83,8 +81,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         if (!manager.hasValidMapArt()) return;
 
         MapArtSet set = manager.getActiveSet();
-        Identifier texId = manager.getTextureId();
-        if (set == null || texId == null) return;
+        if (set == null) return;
 
         Minecraft mc = Minecraft.getInstance();
         Font textRenderer = mc.font;
@@ -301,23 +298,13 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         // Map frame border
         context.fill(mapBoxX - 1, mapBoxY - 1, mapBoxX + renderMapW + 1, mapBoxY + renderMapH + 1, 0xFF353945);
 
-        // Zoomable clipped view
+        // Zoomable clipped view (chunked render; mini tier while zoomed out, full tier zoomed in)
         context.enableScissor(mapBoxX, mapBoxY, mapBoxX + renderMapW, mapBoxY + renderMapH);
 
-        int curDrawW = (int) (renderMapW * previewZoom);
-        int curDrawH = (int) (renderMapH * previewZoom);
-        int drawX = mapBoxX + (int) previewPanX;
-        int drawY = mapBoxY + (int) previewPanY;
-
-        context.blit(
-                RenderPipelines.GUI_TEXTURED,
-                texId,
-                drawX, drawY,
-                0.0f, 0.0f,
-                curDrawW, curDrawH,
-                texW, texH,
-                texW, texH
-        );
+        float chunkZoom = (renderMapW * previewZoom) / (float) Math.max(1, texW);
+        MapArtChunkRenderer.get().render(context,
+                mapBoxX + previewPanX, mapBoxY + previewPanY, chunkZoom,
+                mapBoxX, mapBoxY, mapBoxX + renderMapW, mapBoxY + renderMapH);
 
         context.disableScissor();
 
@@ -458,18 +445,12 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         if (manager.getProjectCount() > 1) {
             if (mx >= prevX - 2 && mx < prevX + prevW + 2 && my >= prevY - 2 && my < prevY + prevH + 2) {
                 manager.prevProject();
-                try {
-                    mc.getSoundManager().play(net.minecraft.client.resources.sounds.SimpleSoundInstance.forUI(
-                        net.minecraft.sounds.SoundEvents.UI_BUTTON_CLICK, 1.1f));
-                } catch (Exception ignored) {}
+                MapArtUi.clickSound(1.1f);
                 return true;
             }
             if (mx >= nextX - 2 && mx < nextX + nextW + 2 && my >= nextY - 2 && my < nextY + nextH + 2) {
                 manager.nextProject();
-                try {
-                    mc.getSoundManager().play(net.minecraft.client.resources.sounds.SimpleSoundInstance.forUI(
-                        net.minecraft.sounds.SoundEvents.UI_BUTTON_CLICK, 1.1f));
-                } catch (Exception ignored) {}
+                MapArtUi.clickSound(1.1f);
                 return true;
             }
         }
@@ -486,16 +467,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                     module.clearLoaded();
                 } else {
                     module.toggleKeepLoaded();
-                    if (mc.player != null) {
-                        boolean state = module.keepLoaded.get();
-                        mc.gui.hud.getChat().addClientSystemMessage(Component.literal(
-                            state ? "§a[Map Art]§r Keep Loaded: §aON§r (maps stay in memory)"
-                                  : "§e[Map Art]§r Keep Loaded: §cOFF§r (live inventory only)"));
-                        try {
-                            mc.getSoundManager().play(net.minecraft.client.resources.sounds.SimpleSoundInstance.forUI(
-                                net.minecraft.sounds.SoundEvents.UI_BUTTON_CLICK, 1.2f));
-                        } catch (Exception ignored) {}
-                    }
                 }
                 return true;
             }
@@ -539,16 +510,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                 module.clearLoaded();
             } else {
                 module.toggleKeepLoaded();
-                if (mc.player != null) {
-                    boolean state = module.keepLoaded.get();
-                    mc.gui.hud.getChat().addClientSystemMessage(Component.literal(
-                        state ? "§a[Map Art]§r Keep Loaded: §aON§r (maps stay in memory)"
-                              : "§e[Map Art]§r Keep Loaded: §cOFF§r (live inventory only)"));
-                    try {
-                        mc.getSoundManager().play(net.minecraft.client.resources.sounds.SimpleSoundInstance.forUI(
-                            net.minecraft.sounds.SoundEvents.UI_BUTTON_CLICK, 1.2f));
-                    } catch (Exception ignored) {}
-                }
             }
             return true;
         }
@@ -613,7 +574,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         MapArtManager manager = MapArtManager.get();
         if (!manager.hasValidMapArt()) return false;
 
-        Minecraft mc = Minecraft.getInstance();
         int k = input.key();
         boolean isShift = input.hasShiftDown() || isShiftPressed();
         boolean isCtrl = input.hasControlDown();
@@ -630,10 +590,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                 previewZoom = 1.0f;
                 previewPanX = 0;
                 previewPanY = 0;
-                try {
-                    mc.getSoundManager().play(net.minecraft.client.resources.sounds.SimpleSoundInstance.forUI(
-                        net.minecraft.sounds.SoundEvents.UI_BUTTON_CLICK, 1.1f));
-                } catch (Exception ignored) {}
+                MapArtUi.clickSound(1.1f);
                 return true;
             } else if (previewZoom > 1.0f) {
                 previewPanX += 20f;
@@ -649,10 +606,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                 previewZoom = 1.0f;
                 previewPanX = 0;
                 previewPanY = 0;
-                try {
-                    mc.getSoundManager().play(net.minecraft.client.resources.sounds.SimpleSoundInstance.forUI(
-                        net.minecraft.sounds.SoundEvents.UI_BUTTON_CLICK, 1.1f));
-                } catch (Exception ignored) {}
+                MapArtUi.clickSound(1.1f);
                 return true;
             } else if (previewZoom > 1.0f) {
                 previewPanX -= 20f;
