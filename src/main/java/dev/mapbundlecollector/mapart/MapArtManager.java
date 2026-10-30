@@ -202,18 +202,22 @@ public final class MapArtManager {
                 previousById.get(projectId.toLowerCase(Locale.ROOT)), settings, persist));
             rescanned.add(projectId.toLowerCase(Locale.ROOT));
         }
-        for (MapArtSet existing : projectSets) {
-            if (rescanned.contains(existing.getProjectId().toLowerCase(Locale.ROOT))) continue;
-            if (persist) {
-                // Disk-backed sets survive with an empty inventory (as cache-only views).
-                ProjectCache project = cache.getProject(existing.getProjectId());
-                next.add(project != null && project.tileCount() > 0
-                    ? cacheOnlySet(project)
-                    : existing);
-            } else if (keepLoaded && !existing.isCacheOrigin()) {
-                next.add(existing);
+        if (persist) {
+            // The DISK cache is the source of truth: every cached project stays visible even
+            // with an empty inventory AND after clear()/module toggles (which wipe only the
+            // in-memory list). Rebuilding from cache.allProjects() instead of the in-memory
+            // list is what makes cached maparts (e.g. a finished project living in chests)
+            // appear in the side panel after a toggle or restart.
+            for (ProjectCache project : cache.allProjects()) {
+                if (rescanned.contains(project.getProjectId().toLowerCase(Locale.ROOT))) continue;
+                if (project.tileCount() > 0) next.add(cacheOnlySet(project));
             }
-            // Both flags off: drop the set (today's behavior).
+        } else {
+            for (MapArtSet existing : projectSets) {
+                if (rescanned.contains(existing.getProjectId().toLowerCase(Locale.ROOT))) continue;
+                if (keepLoaded && !existing.isCacheOrigin()) next.add(existing);
+                // Both flags off: drop the set (today's behavior).
+            }
         }
 
         projectSets.clear();
