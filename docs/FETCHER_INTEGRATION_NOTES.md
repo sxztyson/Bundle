@@ -1,11 +1,11 @@
 # Map Data Fetcher — verified integration notes (MC 26.2)
 
 Everything below was verified against the mapped jar
-`C:\Users\ComicSquid\.gradle\caches\fabric-loom\minecraftMaven\net\minecraft\minecraft-merged-deobf\26.2\minecraft-merged-deobf-26.2.jar`
+`<user-home>\.gradle\caches\fabric-loom\minecraftMaven\net\minecraft\minecraft-merged-deobf\26.2\minecraft-merged-deobf-26.2.jar`
 (**[MC]**, `javap -c -p` bytecode disassembly) and the Meteor 26.2 sources jar
-`C:\Users\ComicSquid\.gradle\caches\modules-2\files-2.1\meteordevelopment\meteor-client\26.2-SNAPSHOT\78fd6e89694eda4e009dc48aa2c0481def809dd7\meteor-client-26.2-SNAPSHOT-sources.jar`
+`<user-home>\.gradle\caches\modules-2\files-2.1\meteordevelopment\meteor-client\26.2-SNAPSHOT\78fd6e89694eda4e009dc48aa2c0481def809dd7\meteor-client-26.2-SNAPSHOT-sources.jar`
 (**[METEOR-SRC]**), plus the repo's own proven modules (**[REPO]**, exact `file:line` quotes).
-JDK used: `C:\Users\ComicSquid\.gradle\jdks\eclipse_adoptium-25-amd64-windows.2\bin`.
+JDK used: `<user-home>\.gradle\jdks\eclipse_adoptium-25-amd64-windows.2\bin`.
 No decompiler was available in the caches — all semantics are read from bytecode; where a
 conclusion depends on bytecode operand order it is called out explicitly.
 

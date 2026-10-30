@@ -126,7 +126,7 @@ mapbundlecollector/
 
 - Build: `gradlew.bat build` in `D:\Project\Bundle` (Fabric Loom, MC 26.2,
   Meteor 26.2-SNAPSHOT, Java 25 release). JDK 25 at
-  `C:\Users\ComicSquid\.gradle\jdks\temurin-25` (PATH java is 21 - too old).
+  `<user-home>\.gradle\jdks\temurin-25` (PATH java is 21 - too old).
 - Deploy: jar goes to
-  `C:\Users\ComicSquid\AppData\Roaming\PrismLauncher\instances\26.2\minecraft\mods`.
+  `<user-home>\AppData\Roaming\PrismLauncher\instances\26.2\minecraft\mods`.
 - Package root: `dev.mapbundlecollector`.

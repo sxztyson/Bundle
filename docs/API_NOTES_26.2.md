@@ -9,13 +9,13 @@ present in the deobf jar). Items marked **PROVEN in repo** additionally appear i
 
 | What | Path |
 |---|---|
-| Mapped (Mojang-name) MC 26.2 jar | `C:\Users\ComicSquid\.gradle\caches\fabric-loom\minecraftMaven\net\minecraft\minecraft-merged-deobf\26.2\minecraft-merged-deobf-26.2.jar` (abbreviated **[MC]** below) |
-| Raw processed MC jars (same class names) | `C:\Users\ComicSquid\.gradle\caches\fabric-loom\26.2\minecraft-merged.jar` etc. |
-| Meteor 26.2 binary | `C:\Users\ComicSquid\.gradle\caches\modules-2\files-2.1\meteordevelopment\meteor-client\26.2-SNAPSHOT\b55524ae9c5d79df9e854ab04753612dd8abe36b\meteor-client-26.2-SNAPSHOT.jar` (**[METEOR]**) |
+| Mapped (Mojang-name) MC 26.2 jar | `<user-home>\.gradle\caches\fabric-loom\minecraftMaven\net\minecraft\minecraft-merged-deobf\26.2\minecraft-merged-deobf-26.2.jar` (abbreviated **[MC]** below) |
+| Raw processed MC jars (same class names) | `<user-home>\.gradle\caches\fabric-loom\26.2\minecraft-merged.jar` etc. |
+| Meteor 26.2 binary | `<user-home>\.gradle\caches\modules-2\files-2.1\meteordevelopment\meteor-client\26.2-SNAPSHOT\b55524ae9c5d79df9e854ab04753612dd8abe36b\meteor-client-26.2-SNAPSHOT.jar` (**[METEOR]**) |
 | Meteor 26.2 sources | `...\meteor-client\26.2-SNAPSHOT\78fd6e89694eda4e009dc48aa2c0481def809dd7\meteor-client-26.2-SNAPSHOT-sources.jar` (**[METEOR-SRC]**) |
-| fabric-loader 0.19.3 | `C:\Users\ComicSquid\.gradle\caches\modules-2\files-2.1\net.fabricmc\fabric-loader\0.19.3\354dfaa02d0552e11867f85dff7cdbfaf813ba3e\fabric-loader-0.19.3.jar` (**[LOADER]**) |
+| fabric-loader 0.19.3 | `<user-home>\.gradle\caches\modules-2\files-2.1\net.fabricmc\fabric-loader\0.19.3\354dfaa02d0552e11867f85dff7cdbfaf813ba3e\fabric-loader-0.19.3.jar` (**[LOADER]**) |
 
-JDK used: `C:\Users\ComicSquid\.gradle\jdks\temurin-25\bin` (javap/unzip).
+JDK used: `<user-home>\.gradle\jdks\temurin-25\bin` (javap/unzip).
 
 ---
 
@@ -378,9 +378,9 @@ assigns `mc = Minecraft.getInstance()` a few lines earlier).
 ## 13. GSON availability
 
 MC 26.2 declares `com.google.code.gson:gson:2.14.0` as a runtime library
-(`C:\Users\ComicSquid\.gradle\caches\fabric-loom\26.2\mojang_minecraft_info.json`,
+(`<user-home>\.gradle\caches\fabric-loom\26.2\mojang_minecraft_info.json`,
 grep: `com.google.code.gson:gson:2.14.0`; jar at
-`C:\Users\ComicSquid\.gradle\caches\modules-2\files-2.1\com.google.code.gson\gson\2.14.0\...`).
+`<user-home>\.gradle\caches\modules-2\files-2.1\com.google.code.gson\gson\2.14.0\...`).
 MC client classes reference `com/google/gson` directly (e.g. `net.minecraft.client.Options$*`),
 so loom puts it on the compile classpath too. fabric-loader bundles a *relocated* copy
 (`net.fabricmc.loader.impl.lib.gson`) — no conflict. Informational: the cache engine stays
