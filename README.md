@@ -8,6 +8,10 @@ A client-side [Meteor Client](https://meteorclient.com/) addon for Fabric and Mi
 - **Chest sorter:** retrieves coordinate-named map tiles in grid order across chests and shulker boxes.
 - **Duplicate extractor:** separates duplicate map tiles into an empty bundle.
 - **Map-art viewer:** stitches bundle contents into an inventory side panel or fullscreen preview.
+- **Huge mapart support:** 204x124-scale maparts render in GPU-friendly 16x16-tile chunks built in background threads, with a configurable VRAM budget (`max-full-res-chunks`).
+- **Persistent cache:** scanned tiles are remembered in `.minecraft/mapbundlecollector/`, surviving restarts until you remove them with the in-viewer *Del Cache* button.
+- **Map data fetcher:** open a chest of bundles and it automatically unpacks uncached maps into your inventory (the server then sends each map's data), captures the packets, and re-bundles everything - verified against server-confirmed state after every click, with event-driven completion (no timeouts on slow data) and safe abort.
+- **Missing-tile export:** verify a project against its expected size (`map-width`/`map-height` settings) and export a missing-tiles report to `mapbundlecollector/missing/`.
 - **Safety controls:** configurable action delays and cursor recovery help avoid inventory desynchronisation.
 
 ## Screenshots

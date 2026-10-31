@@ -3,30 +3,39 @@ package dev.mapbundlecollector.gui;
 import dev.mapbundlecollector.mapart.MapArtManager;
 import dev.mapbundlecollector.mapart.MapArtSet;
 import dev.mapbundlecollector.mapart.MapTile;
-import org.lwjgl.glfw.GLFW;
-
+import dev.mapbundlecollector.modules.MapArtViewerModule;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
+import meteordevelopment.meteorclient.systems.modules.Modules;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.KeyEvent;
 import net.minecraft.client.input.MouseButtonEvent;
-import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.network.chat.Component;
-import net.minecraft.resources.Identifier;
+import org.lwjgl.glfw.GLFW;
 
 public final class MapArtRenderScreen extends Screen {
     private static final float MIN_ZOOM = 0.005f;
     private static final float MAX_ZOOM = 20.0f;
+    private static final float LABEL_ZOOM_THRESHOLD = 0.4f;
+    private static final float OVERLAY_MIN_TILE_PX = 6f;
+    private static final int OVERLAY_FILL_CAP = 4096;
+    private static final long EXPORT_FLASH_MS = 1200;
 
     private final Screen parentScreen;
     private float zoom = 1.0f;
     private float panX = 0;
     private float panY = 0;
     private boolean showGrid = true;
+    private boolean showMissingOverlay = true;
     private boolean initializedPosition = false;
+
+    private Button exportButton;
+    private long exportFlashUntil = 0;
+    private boolean exportFlashing = false;
 
     public MapArtRenderScreen(Screen parentScreen) {
         super(Component.literal("Map Art Viewer"));
@@ -47,81 +56,99 @@ public final class MapArtRenderScreen extends Screen {
             initializedPosition = true;
         }
 
-        int buttonY = height - 28;
+        MapArtViewerModule module = Modules.get().get(MapArtViewerModule.class);
+        int row1Y = height - 28;
+        int row2Y = height - 50;
+        int rightLimit = width - 130; // reserve the right-anchored Back button
 
-        // Reset / Center button
-        addRenderableWidget(Button.builder(Component.literal("Center View"), b -> fitToScreen())
-                .bounds(12, buttonY, 90, 20)
-                .build());
+        // Buttons WRAP onto a second row when the bar overflows; previously the
+        // conditionally-added tail buttons (Miss / Export JSON / Del Cache) silently
+        // disappeared on narrower GUIs. Every action must always be reachable.
+        int[] cursor = {12, row1Y};
 
-        // Toggle Grid button
-        addRenderableWidget(Button.builder(Component.literal(showGrid ? "Grid: ON" : "Grid: OFF"), b -> {
+        addBarButton("Center View", slot(cursor, 90, rightLimit, row2Y), cursor[1], 90, b -> fitToScreen());
+        addBarButton(showGrid ? "Grid: ON" : "Grid: OFF", slot(cursor, 80, rightLimit, row2Y), cursor[1], 80, b -> {
             showGrid = !showGrid;
             b.setMessage(Component.literal(showGrid ? "Grid: ON" : "Grid: OFF"));
-        }).bounds(108, buttonY, 80, 20).build());
-
-        // Zoom In button
-        addRenderableWidget(Button.builder(Component.literal("+"), b -> adjustZoom(1.25f, width / 2.0, height / 2.0))
-                .bounds(194, buttonY, 24, 20)
-                .build());
-
-        // Zoom Out button
-        addRenderableWidget(Button.builder(Component.literal("-"), b -> adjustZoom(0.8f, width / 2.0, height / 2.0))
-                .bounds(222, buttonY, 24, 20)
-                .build());
-
-        // Flip / Swap orientation button
-        addRenderableWidget(Button.builder(Component.literal("Flip: " + set.getCols() + "x" + set.getRows()), b -> {
-            dev.mapbundlecollector.modules.MapArtViewerModule mod =
-                meteordevelopment.meteorclient.systems.modules.Modules.get().get(dev.mapbundlecollector.modules.MapArtViewerModule.class);
-            if (mod != null) {
-                mod.toggleCoordinateOrder();
+        });
+        addBarButton("+", slot(cursor, 24, rightLimit, row2Y), cursor[1], 24, b -> adjustZoom(1.25f, width / 2.0, height / 2.0));
+        addBarButton("-", slot(cursor, 24, rightLimit, row2Y), cursor[1], 24, b -> adjustZoom(0.8f, width / 2.0, height / 2.0));
+        addBarButton("Flip: " + set.getCols() + "x" + set.getRows(), slot(cursor, 95, rightLimit, row2Y), cursor[1], 95, b -> {
+            if (module != null) {
+                module.toggleCoordinateOrder();
                 fitToScreen();
                 rebuildWidgets();
             }
-        }).bounds(252, buttonY, 95, 20).build());
+        });
 
-        int curX = 352;
-
-        // Multi-map navigation buttons
         if (manager.getProjectCount() > 1) {
-            addRenderableWidget(Button.builder(Component.literal("◀ Prev"), b -> {
-                manager.prevProject();
-                fitToScreen();
-                rebuildWidgets();
-            }).bounds(curX, buttonY, 52, 20).build());
-            curX += 56;
-
-            addRenderableWidget(Button.builder(Component.literal("Next ▶"), b -> {
-                manager.nextProject();
-                fitToScreen();
-                rebuildWidgets();
-            }).bounds(curX, buttonY, 52, 20).build());
-            curX += 56;
+            addBarButton("◀ Prev", slot(cursor, 52, rightLimit, row2Y), cursor[1], 52, b -> switchProject(manager::prevProject));
+            addBarButton("Next ▶", slot(cursor, 52, rightLimit, row2Y), cursor[1], 52, b -> switchProject(manager::nextProject));
         }
 
-        // Loaded mode and Clear cache buttons
-        dev.mapbundlecollector.modules.MapArtViewerModule mod =
-            meteordevelopment.meteorclient.systems.modules.Modules.get().get(dev.mapbundlecollector.modules.MapArtViewerModule.class);
-        if (mod != null && curX + 85 < width - 130) {
-            addRenderableWidget(Button.builder(Component.literal(mod.keepLoaded.get() ? "Loaded: ON" : "Loaded: OFF"), b -> {
-                mod.toggleKeepLoaded();
-                b.setMessage(Component.literal(mod.keepLoaded.get() ? "Loaded: ON" : "Loaded: OFF"));
-            }).bounds(curX, buttonY, 80, 20).build());
-            curX += 84;
-
-            if (curX + 50 < width - 130) {
-                addRenderableWidget(Button.builder(Component.literal("Clear"), b -> {
-                    mod.clearLoaded();
-                    onClose();
-                }).bounds(curX, buttonY, 46, 20).build());
-            }
+        if (module != null) {
+            addBarButton(module.keepLoaded.get() ? "Loaded: ON" : "Loaded: OFF", slot(cursor, 80, rightLimit, row2Y), cursor[1], 80, b -> {
+                module.toggleKeepLoaded();
+                b.setMessage(Component.literal(module.keepLoaded.get() ? "Loaded: ON" : "Loaded: OFF"));
+            });
+            addBarButton("Clear", slot(cursor, 46, rightLimit, row2Y), cursor[1], 46, b -> module.clearLoaded());
         }
 
-        // Close / Back button
+        addBarButton(showMissingOverlay ? "Miss: ON" : "Miss: OFF", slot(cursor, 78, rightLimit, row2Y), cursor[1], 78, b -> {
+            showMissingOverlay = !showMissingOverlay;
+            b.setMessage(Component.literal(showMissingOverlay ? "Miss: ON" : "Miss: OFF"));
+        });
+        exportButton = addBarButton("Export JSON", slot(cursor, 92, rightLimit, row2Y), cursor[1], 92, b -> exportMissing());
+        exportFlashing = false;
+        addBarButton("Del Cache", slot(cursor, 80, rightLimit, row2Y), cursor[1], 80, b -> {
+            if (module != null) module.deleteCache();
+        });
+
         addRenderableWidget(Button.builder(Component.literal("Back to Inventory"), b -> onClose())
-                .bounds(width - 126, buttonY, 114, 20)
+                .bounds(width - 126, row1Y, 114, 20)
                 .build());
+    }
+
+    // Wraps the button cursor to the second row when the next button would collide with
+    // the right-anchored Back button; returns the x for the button about to be placed.
+    private int slot(int[] cursor, int buttonWidth, int rightLimit, int row2Y) {
+        if (cursor[0] + buttonWidth >= rightLimit) {
+            cursor[0] = 12;
+            cursor[1] = row2Y;
+        }
+        int x = cursor[0];
+        cursor[0] += buttonWidth + 4;
+        return x;
+    }
+
+    private Button addBarButton(String label, int x, int y, int width, Consumer<Button> onPress) {
+        Button button = Button.builder(Component.literal(label), onPress::accept)
+                .bounds(x, y, width, 20)
+                .build();
+        addRenderableWidget(button);
+        return button;
+    }
+
+    private void switchProject(Runnable switcher) {
+        switcher.run();
+        fitToScreen();
+        rebuildWidgets();
+    }
+
+    private void exportMissing() {
+        MapArtViewerModule module = Modules.get().get(MapArtViewerModule.class);
+        if (module != null) module.exportMissing();
+        if (exportButton != null) {
+            exportFlashUntil = System.currentTimeMillis() + EXPORT_FLASH_MS;
+        }
+    }
+
+    private void updateExportLabel() {
+        boolean flashing = System.currentTimeMillis() < exportFlashUntil;
+        if (exportButton != null && flashing != exportFlashing) {
+            exportFlashing = flashing;
+            exportButton.setMessage(Component.literal(flashing ? "Exported!" : "Export JSON"));
+        }
     }
 
     private void fitToScreen() {
@@ -176,6 +203,21 @@ public final class MapArtRenderScreen extends Screen {
         }
 
         MapArtManager manager = MapArtManager.get();
+        MapArtViewerModule module = Modules.get().get(MapArtViewerModule.class);
+
+        if (k == GLFW.GLFW_KEY_M) {
+            showMissingOverlay = !showMissingOverlay;
+            rebuildWidgets();
+            return true;
+        }
+        if (k == GLFW.GLFW_KEY_E) {
+            exportMissing();
+            return true;
+        }
+        if (k == GLFW.GLFW_KEY_DELETE && module != null) {
+            module.deleteCache();
+            return true;
+        }
 
         // Project switching shortcuts: [ or ], Tab, or Shift + Left/Right
         boolean isShift = (input.modifiers() & GLFW.GLFW_MOD_SHIFT) != 0 || input.hasShiftDown();
@@ -186,20 +228,16 @@ public final class MapArtRenderScreen extends Screen {
 
         if (manager.hasValidMapArt() && manager.getProjectCount() > 1) {
             if (k == GLFW.GLFW_KEY_LEFT_BRACKET || (isShift && isLeftKey)) {
-                manager.prevProject();
-                fitToScreen();
-                rebuildWidgets();
+                switchProject(manager::prevProject);
                 return true;
             }
             if (k == GLFW.GLFW_KEY_RIGHT_BRACKET || (isShift && isRightKey) || k == GLFW.GLFW_KEY_TAB) {
-                manager.nextProject();
-                fitToScreen();
-                rebuildWidgets();
+                switchProject(manager::nextProject);
                 return true;
             }
         }
 
-        // Pan with Arrow Keys or WASD (dynamically scaled for large 50x50 maps)
+        // Pan with Arrow Keys or WASD (dynamically scaled for large maps)
         float panStep = Math.max(50f, 150f * (1.0f / Math.max(0.1f, zoom * 8f)));
         if (isUpKey || k == GLFW.GLFW_KEY_W) {
             panY += panStep;
@@ -211,9 +249,7 @@ public final class MapArtRenderScreen extends Screen {
         }
         if (isLeftKey || k == GLFW.GLFW_KEY_A) {
             if (manager.hasValidMapArt() && manager.getProjectCount() > 1 && !isShift && isLeftKey) {
-                manager.prevProject();
-                fitToScreen();
-                rebuildWidgets();
+                switchProject(manager::prevProject);
                 return true;
             }
             panX += panStep;
@@ -221,9 +257,7 @@ public final class MapArtRenderScreen extends Screen {
         }
         if (isRightKey || k == GLFW.GLFW_KEY_D) {
             if (manager.hasValidMapArt() && manager.getProjectCount() > 1 && !isShift && isRightKey) {
-                manager.nextProject();
-                fitToScreen();
-                rebuildWidgets();
+                switchProject(manager::nextProject);
                 return true;
             }
             panX -= panStep;
@@ -266,9 +300,10 @@ public final class MapArtRenderScreen extends Screen {
 
         MapArtManager manager = MapArtManager.get();
         MapArtSet set = manager.getActiveSet();
-        Identifier texId = manager.getTextureId();
 
-        if (manager.hasValidMapArt() && texId != null && set != null) {
+        if (manager.hasValidMapArt() && set != null) {
+            updateExportLabel();
+
             int texW = manager.getTextureWidth();
             int texH = manager.getTextureHeight();
             float drawW = texW * zoom;
@@ -277,55 +312,24 @@ public final class MapArtRenderScreen extends Screen {
             // Draw map shadow/border
             context.fill((int) panX - 2, (int) panY - 2, (int) (panX + drawW) + 2, (int) (panY + drawH) + 2, 0xFF2A2E38);
 
-            // Draw stitched map texture
-            context.blit(
-                    RenderPipelines.GUI_TEXTURED,
-                    texId,
-                    (int) panX, (int) panY,
-                    0.0f, 0.0f,
-                    (int) drawW, (int) drawH,
-                    texW, texH,
-                    texW, texH
-            );
+            // Chunked async map render
+            MapArtChunkRenderer.get().render(context, panX, panY, zoom, 0, 0, width, height);
 
-            // Grid lines
+            float tilePx = MapArtSet.TILE_PIXELS * zoom;
             if (showGrid) {
-                float tileW = 128 * zoom;
-                float tileH = 128 * zoom;
-
-                for (int r = 0; r <= set.getRows(); r++) {
-                    int yPos = (int) (panY + r * tileH);
-                    context.fill((int) panX, yPos, (int) (panX + drawW), yPos + 1, 0x66FFFFFF);
-                }
-
-                for (int c = 0; c <= set.getCols(); c++) {
-                    int xPos = (int) (panX + c * tileW);
-                    context.fill(xPos, (int) panY, xPos + 1, (int) (panY + drawH), 0x66FFFFFF);
-                }
-
-                // Tile coordinates overlay if zoomed in enough
-                if (zoom >= 0.4f) {
-                    for (int r = 0; r < set.getRows(); r++) {
-                        for (int c = 0; c < set.getCols(); c++) {
-                            int cx = (int) (panX + c * tileW + 4);
-                            int cy = (int) (panY + r * tileH + 4);
-                            MapTile tile = set.getTile(r, c);
-                            int color = (tile != null) ? 0xDDFFFFFF : 0xFFFF5555;
-                            context.text(font, "[" + r + "," + c + "]", cx, cy, color);
-                        }
-                    }
-                }
+                renderGrid(context, set, tilePx, drawW, drawH);
+            }
+            if (showMissingOverlay && tilePx >= OVERLAY_MIN_TILE_PX) {
+                renderMissingOverlay(context, set, tilePx);
             }
 
             // Top Header Card
-            renderHeaderCard(context, set, texW, texH);
+            renderHeaderCard(context, manager, set, texW, texH);
 
             // Mouse hover inspector tooltip
             if (mouseX >= panX && mouseX < panX + drawW && mouseY >= panY && mouseY < panY + drawH) {
-                float tileW = 128 * zoom;
-                float tileH = 128 * zoom;
-                int hCol = (int) ((mouseX - panX) / tileW);
-                int hRow = (int) ((mouseY - panY) / tileH);
+                int hCol = (int) ((mouseX - panX) / tilePx);
+                int hRow = (int) ((mouseY - panY) / tilePx);
 
                 if (hRow >= 0 && hRow < set.getRows() && hCol >= 0 && hCol < set.getCols()) {
                     renderTileTooltip(context, set, hRow, hCol, mouseX, mouseY);
@@ -338,11 +342,59 @@ public final class MapArtRenderScreen extends Screen {
         super.extractRenderState(context, mouseX, mouseY, delta);
     }
 
-    private void renderHeaderCard(GuiGraphicsExtractor context, MapArtSet set, int texW, int texH) {
+    // Grid lines + [r,c] labels restricted to the visible row/col window so a 204x124
+    // mapart never iterates thousands of off-screen tiles.
+    private void renderGrid(GuiGraphicsExtractor context, MapArtSet set, float tilePx, float drawW, float drawH) {
+        int rowFrom = Math.max(0, (int) Math.floor(-panY / tilePx));
+        int rowTo = Math.min(set.getRows(), (int) Math.ceil((height - panY) / tilePx));
+        int colFrom = Math.max(0, (int) Math.floor(-panX / tilePx));
+        int colTo = Math.min(set.getCols(), (int) Math.ceil((width - panX) / tilePx));
+
+        for (int r = rowFrom; r <= rowTo; r++) {
+            int yPos = (int) (panY + r * tilePx);
+            context.fill((int) panX, yPos, (int) (panX + drawW), yPos + 1, 0x66FFFFFF);
+        }
+        for (int c = colFrom; c <= colTo; c++) {
+            int xPos = (int) (panX + c * tilePx);
+            context.fill(xPos, (int) panY, xPos + 1, (int) (panY + drawH), 0x66FFFFFF);
+        }
+
+        if (zoom >= LABEL_ZOOM_THRESHOLD) {
+            for (int r = rowFrom; r < rowTo; r++) {
+                for (int c = colFrom; c < colTo; c++) {
+                    int cx = (int) (panX + c * tilePx + 4);
+                    int cy = (int) (panY + r * tilePx + 4);
+                    MapTile tile = set.getTile(r, c);
+                    int color = (tile != null) ? 0xDDFFFFFF : 0xFFFF5555;
+                    context.text(font, "[" + r + "," + c + "]", cx, cy, color);
+                }
+            }
+        }
+    }
+
+    private void renderMissingOverlay(GuiGraphicsExtractor context, MapArtSet set, float tilePx) {
+        int rowFrom = Math.max(0, (int) Math.floor(-panY / tilePx));
+        int rowTo = Math.min(set.getRows(), (int) Math.ceil((height - panY) / tilePx));
+        int colFrom = Math.max(0, (int) Math.floor(-panX / tilePx));
+        int colTo = Math.min(set.getCols(), (int) Math.ceil((width - panX) / tilePx));
+
+        int fills = 0;
+        for (int r = rowFrom; r < rowTo && fills < OVERLAY_FILL_CAP; r++) {
+            for (int c = colFrom; c < colTo && fills < OVERLAY_FILL_CAP; c++) {
+                if (set.getTile(r, c) != null) continue;
+                int x = (int) (panX + c * tilePx);
+                int y = (int) (panY + r * tilePx);
+                context.fill(x, y, x + (int) tilePx, y + (int) tilePx, 0x40FF0000);
+                fills++;
+            }
+        }
+    }
+
+    private void renderHeaderCard(GuiGraphicsExtractor context, MapArtManager manager, MapArtSet set, int texW, int texH) {
         int cardW = Math.min(width - 24, 480);
         int cardX = (width - cardW) / 2;
         int cardY = 8;
-        int cardH = 34;
+        int cardH = 44;
 
         // Background
         context.fill(cardX, cardY, cardX + cardW, cardY + cardH, 0xDD1E2128);
@@ -350,25 +402,30 @@ public final class MapArtRenderScreen extends Screen {
 
         // Title
         String title = set.getProjectId();
-        MapArtManager mgr = MapArtManager.get();
-        if (mgr.getProjectCount() > 1) {
-            title += " (" + (mgr.getCurrentProjectIndex() + 1) + "/" + mgr.getProjectCount() + ")";
+        if (manager.getProjectCount() > 1) {
+            title += " (" + (manager.getCurrentProjectIndex() + 1) + "/" + manager.getProjectCount() + ")";
         }
         context.text(font, title, cardX + 10, cardY + 6, 0xFFFFFFFF);
 
-        // Subtitle: Dimensions and pixel resolution
-        String sub = set.getCols() + "x" + set.getRows() + " (" + set.getTotalExpected() + " maps • " + texW + "x" + texH + " px)";
-        if (mgr.getProjectCount() > 1) {
-            sub += " • Arrow keys to switch";
-        }
+        // Subtitle: tiles and pixel resolution
+        String sub = set.getCols() + "x" + set.getRows() + " • " + set.getPresentCount() + "/" + set.getTotalExpected()
+            + " tiles • " + texW + " x " + texH + " px";
         context.text(font, sub, cardX + 10, cardY + 18, 0xFFAAAAAA);
+
+        // Status line: missing + cached counts, build progress
+        StringBuilder status = new StringBuilder();
+        status.append(set.getMissingTiles().isEmpty() ? "§amissing 0§r" : "§cmissing " + set.getMissingTiles().size() + "§r");
+        status.append(" • cached ").append(manager.getCachedTileCount(set.getProjectId()));
+        int pending = MapArtChunkRenderer.get().pendingBuilds();
+        if (pending > 0) status.append(" • §erendering ").append(pending).append(" chunks…§r");
+        context.text(font, status.toString(), cardX + 10, cardY + 30, 0xFF888888);
 
         // Status badge
         boolean complete = set.isComplete();
-        String status = complete ? "[100% COMPLETE]" : "[" + set.getPresentCount() + "/" + set.getTotalExpected() + " - " + set.getCompletionPercentage() + "%]";
-        int statusColor = complete ? 0xFF55FF55 : 0xFFFFAA00;
-        int statusW = font.width(status);
-        context.text(font, status, cardX + cardW - statusW - 10, cardY + 6, statusColor);
+        String badge = complete ? "[100% COMPLETE]" : "[" + set.getPresentCount() + "/" + set.getTotalExpected() + " - " + set.getCompletionPercentage() + "%]";
+        int badgeColor = complete ? 0xFF55FF55 : 0xFFFFAA00;
+        int badgeW = font.width(badge);
+        context.text(font, badge, cardX + cardW - badgeW - 10, cardY + 6, badgeColor);
 
         // Zoom text
         String zoomStr = "Zoom: " + Math.round(zoom * 100) + "%";
@@ -380,13 +437,20 @@ public final class MapArtRenderScreen extends Screen {
         MapTile tile = set.getTile(row, col);
         List<Component> lines = new ArrayList<>();
 
-        if (tile != null) {
+        if (tile != null && tile.isLive()) {
             lines.add(Component.literal("Tile: [" + row + ", " + col + "]").withStyle(ChatFormatting.AQUA, ChatFormatting.BOLD));
             lines.add(Component.literal("Name: " + tile.originalName()).withStyle(ChatFormatting.WHITE));
             if (tile.mapId() != null) {
-                lines.add(Component.literal("Map ID: #" + tile.mapId().id()).withStyle(ChatFormatting.GRAY));
+                lines.add(Component.literal("Map ID: #" + tile.mapId()).withStyle(ChatFormatting.GRAY));
             }
             lines.add(Component.literal("Status: Stored in Inventory Bundle").withStyle(ChatFormatting.GREEN));
+        } else if (tile != null) {
+            lines.add(Component.literal("Tile: [" + row + ", " + col + "]").withStyle(ChatFormatting.AQUA, ChatFormatting.BOLD));
+            lines.add(Component.literal("Name: " + tile.originalName()).withStyle(ChatFormatting.WHITE));
+            if (tile.mapId() != null) {
+                lines.add(Component.literal("Map ID: #" + tile.mapId()).withStyle(ChatFormatting.GRAY));
+            }
+            lines.add(Component.literal("Status: Cached from previous batch").withStyle(ChatFormatting.YELLOW));
         } else {
             lines.add(Component.literal("Tile: [" + row + ", " + col + "]").withStyle(ChatFormatting.RED, ChatFormatting.BOLD));
             lines.add(Component.literal("Status: MISSING FROM INVENTORY").withStyle(ChatFormatting.DARK_RED));

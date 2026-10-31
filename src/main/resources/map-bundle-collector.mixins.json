@@ -4,6 +4,7 @@
   "package": "dev.mapbundlecollector.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
+    "ClientPacketListenerMixin",
     "HandledScreenMixin"
   ],
   "injectors": {
