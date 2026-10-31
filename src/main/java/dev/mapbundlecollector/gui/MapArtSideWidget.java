@@ -43,8 +43,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
     private int loadedBtnX, loadedBtnY, loadedBtnW, loadedBtnH;
     private int topLoadedX, topLoadedY, topLoadedW, topLoadedH;
 
-    private int clearBtnX, clearBtnY, clearBtnW, clearBtnH;
-    private int topClearX, topClearY, topClearW, topClearH;
 
     private float previewZoom = 1.0f;
     private float previewPanX = 0f;
@@ -175,17 +173,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
             int loadedColor = isKeepLoaded ? (topLoadedHov ? 0xFF80FF80 : 0xFF55FF55) : (topLoadedHov ? 0xFFCCCCCC : 0xFF888888);
             context.text(textRenderer, loadedStr, topLoadedX + 2, btnY + 7, loadedColor);
 
-            // Clear prompt
-            String clearStr = "[Clear]";
-            int clearStrW = textRenderer.width(clearStr);
-            topClearX = topLoadedX - clearStrW - 6;
-            topClearY = btnY + 4;
-            topClearW = clearStrW + 4;
-            topClearH = 14;
-
-            boolean topClearHov = mouseX >= topClearX && mouseX < topClearX + topClearW && mouseY >= topClearY && mouseY < topClearY + topClearH;
-            context.text(textRenderer, clearStr, topClearX + 2, btnY + 7, topClearHov ? 0xFFFF7777 : 0xFFAA5555);
-
             if (topLoadedHov) {
                 renderLoadedTooltip(context, textRenderer, isKeepLoaded, mouseX, mouseY);
             }
@@ -240,15 +227,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         context.fill(widgetX, widgetY, widgetX + widgetWidth, widgetY + widgetHeight, 0xF0151820);
         context.outline(widgetX, widgetY, widgetWidth, widgetHeight, 0xFF2D323E);
 
-        // Header: Clear button [✖]
-        clearBtnW = 14; clearBtnH = 14;
-        clearBtnX = widgetX + widgetWidth - 18;
-        clearBtnY = widgetY + 4;
-
-        boolean clearHov = mouseX >= clearBtnX - 1 && mouseX < clearBtnX + clearBtnW + 1 && mouseY >= clearBtnY - 1 && mouseY < clearBtnY + clearBtnH + 1;
-        context.fill(clearBtnX, clearBtnY, clearBtnX + clearBtnW, clearBtnY + clearBtnH, clearHov ? 0xFF992222 : 0xFF2A2E38);
-        context.centeredText(textRenderer, "✖", clearBtnX + clearBtnW / 2, clearBtnY + 3, clearHov ? 0xFFFFAAAA : 0xFF888888);
-
         // Header Title
         String rawTitle = set.getProjectId();
         int maxTitleWidth = (projectCount > 1) ? (widgetWidth - 62) : (widgetWidth - 24);
@@ -262,7 +240,7 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
             prevW = 12; prevH = 12;
             nextW = 12; nextH = 12;
 
-            nextX = clearBtnX - 16;
+            nextX = widgetX + widgetWidth - 34;
             nextY = widgetY + 5;
 
             prevX = nextX - 32;
@@ -337,10 +315,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         context.fill(zoomInX, zoomInY, zoomInX + zoomInW, zoomInY + zoomInH, zInHov ? 0xFF4A6DA7 : 0xFF282E3B);
         context.centeredText(textRenderer, "+", zoomInX + zoomInW / 2, zoomInY + 1, 0xFFFFFFFF);
 
-        if (clearHov) {
-            context.setComponentTooltipForNextFrame(textRenderer, List.of(Component.literal("Clear loaded maps from cache").withStyle(ChatFormatting.RED)), mouseX, mouseY);
-        }
-
         // Missing indicators text
         int currentY = mapBoxY + renderMapH + 4;
         if (!set.isComplete() && module.showMissing.get()) {
@@ -399,7 +373,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
             tooltip.add(Component.literal("are removed from your inventory.").withStyle(ChatFormatting.GRAY));
             tooltip.add(Component.literal("Supports huge 50x50 maparts!").withStyle(ChatFormatting.YELLOW));
             tooltip.add(Component.literal("• Click: Toggle OFF").withStyle(ChatFormatting.WHITE));
-            tooltip.add(Component.literal("• Shift-Click: Clear cache").withStyle(ChatFormatting.RED));
         } else {
             tooltip.add(Component.literal("Keep Loaded: OFF").withStyle(ChatFormatting.GRAY, ChatFormatting.BOLD));
             tooltip.add(Component.literal("Only maps in current inventory are shown.").withStyle(ChatFormatting.GRAY));
@@ -439,8 +412,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         Minecraft mc = Minecraft.getInstance();
         double mx = click.x();
         double my = click.y();
-        boolean isShift = click.hasShiftDown() || isShiftPressed() || click.button() != 0;
-
         // Arrow buttons click handling
         if (manager.getProjectCount() > 1) {
             if (mx >= prevX - 2 && mx < prevX + prevW + 2 && my >= prevY - 2 && my < prevY + prevH + 2) {
@@ -456,18 +427,9 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
         }
 
         if (isTopBadgeMode) {
-            // Top Badge: Clear button
-            if (mx >= topClearX - 2 && mx < topClearX + topClearW + 2 && my >= topClearY - 2 && my < topClearY + topClearH + 2) {
-                module.clearLoaded();
-                return true;
-            }
-            // Top Badge: Loaded toggle / shift-clear
+            // Top Badge: Loaded toggle (clear/delete live only in the fullscreen viewer)
             if (mx >= topLoadedX && mx < topLoadedX + topLoadedW && my >= topLoadedY && my < topLoadedY + topLoadedH) {
-                if (isShift) {
-                    module.clearLoaded();
-                } else {
-                    module.toggleKeepLoaded();
-                }
+                module.toggleKeepLoaded();
                 return true;
             }
             // Top Badge: Render button
@@ -476,12 +438,6 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
                 return true;
             }
             return false;
-        }
-
-        // Side Card: Header Clear [✖] button
-        if (mx >= clearBtnX - 2 && mx < clearBtnX + clearBtnW + 3 && my >= clearBtnY - 2 && my < clearBtnY + clearBtnH + 3) {
-            module.clearLoaded();
-            return true;
         }
 
         // Side Card: Mini Zoom buttons
@@ -504,13 +460,9 @@ public final class MapArtSideWidget implements Renderable, GuiEventListener, Nar
             return true;
         }
 
-        // Side Card: Loaded toggle button (Shift-click or Right-click clears cache!)
+        // Side Card: Loaded toggle button (clear/delete live only in the fullscreen viewer)
         if (mx >= loadedBtnX && mx < loadedBtnX + loadedBtnW && my >= loadedBtnY && my < loadedBtnY + loadedBtnH) {
-            if (isShift) {
-                module.clearLoaded();
-            } else {
-                module.toggleKeepLoaded();
-            }
+            module.toggleKeepLoaded();
             return true;
         }
 

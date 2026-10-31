@@ -57,73 +57,68 @@ public final class MapArtRenderScreen extends Screen {
         }
 
         MapArtViewerModule module = Modules.get().get(MapArtViewerModule.class);
-        int buttonY = height - 28;
+        int row1Y = height - 28;
+        int row2Y = height - 50;
         int rightLimit = width - 130; // reserve the right-anchored Back button
-        int curX = 12;
 
-        addBarButton("Center View", curX, buttonY, 90, b -> fitToScreen());
-        curX += 94;
-        addBarButton(showGrid ? "Grid: ON" : "Grid: OFF", curX, buttonY, 80, b -> {
+        // Buttons WRAP onto a second row when the bar overflows; previously the
+        // conditionally-added tail buttons (Miss / Export JSON / Del Cache) silently
+        // disappeared on narrower GUIs. Every action must always be reachable.
+        int[] cursor = {12, row1Y};
+
+        addBarButton("Center View", slot(cursor, 90, rightLimit, row2Y), cursor[1], 90, b -> fitToScreen());
+        addBarButton(showGrid ? "Grid: ON" : "Grid: OFF", slot(cursor, 80, rightLimit, row2Y), cursor[1], 80, b -> {
             showGrid = !showGrid;
             b.setMessage(Component.literal(showGrid ? "Grid: ON" : "Grid: OFF"));
         });
-        curX += 84;
-        addBarButton("+", curX, buttonY, 24, b -> adjustZoom(1.25f, width / 2.0, height / 2.0));
-        curX += 28;
-        addBarButton("-", curX, buttonY, 24, b -> adjustZoom(0.8f, width / 2.0, height / 2.0));
-        curX += 28;
-        addBarButton("Flip: " + set.getCols() + "x" + set.getRows(), curX, buttonY, 95, b -> {
+        addBarButton("+", slot(cursor, 24, rightLimit, row2Y), cursor[1], 24, b -> adjustZoom(1.25f, width / 2.0, height / 2.0));
+        addBarButton("-", slot(cursor, 24, rightLimit, row2Y), cursor[1], 24, b -> adjustZoom(0.8f, width / 2.0, height / 2.0));
+        addBarButton("Flip: " + set.getCols() + "x" + set.getRows(), slot(cursor, 95, rightLimit, row2Y), cursor[1], 95, b -> {
             if (module != null) {
                 module.toggleCoordinateOrder();
                 fitToScreen();
                 rebuildWidgets();
             }
         });
-        curX += 99;
 
         if (manager.getProjectCount() > 1) {
-            addBarButton("◀ Prev", curX, buttonY, 52, b -> switchProject(manager::prevProject));
-            curX += 56;
-            addBarButton("Next ▶", curX, buttonY, 52, b -> switchProject(manager::nextProject));
-            curX += 56;
+            addBarButton("◀ Prev", slot(cursor, 52, rightLimit, row2Y), cursor[1], 52, b -> switchProject(manager::prevProject));
+            addBarButton("Next ▶", slot(cursor, 52, rightLimit, row2Y), cursor[1], 52, b -> switchProject(manager::nextProject));
         }
 
-        if (module != null && curX + 80 < rightLimit) {
-            addBarButton(module.keepLoaded.get() ? "Loaded: ON" : "Loaded: OFF", curX, buttonY, 80, b -> {
+        if (module != null) {
+            addBarButton(module.keepLoaded.get() ? "Loaded: ON" : "Loaded: OFF", slot(cursor, 80, rightLimit, row2Y), cursor[1], 80, b -> {
                 module.toggleKeepLoaded();
                 b.setMessage(Component.literal(module.keepLoaded.get() ? "Loaded: ON" : "Loaded: OFF"));
             });
-            curX += 84;
-            if (curX + 46 < rightLimit) {
-                addBarButton("Clear", curX, buttonY, 46, b -> {
-                    module.clearLoaded();
-                    onClose();
-                });
-                curX += 50;
-            }
+            addBarButton("Clear", slot(cursor, 46, rightLimit, row2Y), cursor[1], 46, b -> module.clearLoaded());
         }
 
-        if (curX + 78 < rightLimit) {
-            addBarButton(showMissingOverlay ? "Miss: ON" : "Miss: OFF", curX, buttonY, 78, b -> {
-                showMissingOverlay = !showMissingOverlay;
-                b.setMessage(Component.literal(showMissingOverlay ? "Miss: ON" : "Miss: OFF"));
-            });
-            curX += 82;
-        }
-        if (curX + 92 < rightLimit) {
-            exportButton = addBarButton("Export JSON", curX, buttonY, 92, b -> exportMissing());
-            exportFlashing = false;
-            curX += 96;
-        }
-        if (curX + 80 < rightLimit) {
-            addBarButton("Del Cache", curX, buttonY, 80, b -> {
-                if (module != null) module.deleteCache();
-            });
-        }
+        addBarButton(showMissingOverlay ? "Miss: ON" : "Miss: OFF", slot(cursor, 78, rightLimit, row2Y), cursor[1], 78, b -> {
+            showMissingOverlay = !showMissingOverlay;
+            b.setMessage(Component.literal(showMissingOverlay ? "Miss: ON" : "Miss: OFF"));
+        });
+        exportButton = addBarButton("Export JSON", slot(cursor, 92, rightLimit, row2Y), cursor[1], 92, b -> exportMissing());
+        exportFlashing = false;
+        addBarButton("Del Cache", slot(cursor, 80, rightLimit, row2Y), cursor[1], 80, b -> {
+            if (module != null) module.deleteCache();
+        });
 
         addRenderableWidget(Button.builder(Component.literal("Back to Inventory"), b -> onClose())
-                .bounds(width - 126, buttonY, 114, 20)
+                .bounds(width - 126, row1Y, 114, 20)
                 .build());
+    }
+
+    // Wraps the button cursor to the second row when the next button would collide with
+    // the right-anchored Back button; returns the x for the button about to be placed.
+    private int slot(int[] cursor, int buttonWidth, int rightLimit, int row2Y) {
+        if (cursor[0] + buttonWidth >= rightLimit) {
+            cursor[0] = 12;
+            cursor[1] = row2Y;
+        }
+        int x = cursor[0];
+        cursor[0] += buttonWidth + 4;
+        return x;
     }
 
     private Button addBarButton(String label, int x, int y, int width, Consumer<Button> onPress) {
