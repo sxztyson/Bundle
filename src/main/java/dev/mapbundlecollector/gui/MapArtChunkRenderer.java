@@ -52,7 +52,7 @@ public final class MapArtChunkRenderer {
     private record BuildJob(
         long key, int chunkRow, int chunkCol, int tilesW, int tilesH,
         Set<Long> presentTileKeys, ColorSource colorSource,
-        String safeProject, int version, boolean needFull) {}
+        String safeProject, int version, boolean needFull, int generation) {}
 
     private record BuildResult(
         long key, int chunkRow, int chunkCol, String safeProject, int version,
@@ -79,6 +79,9 @@ public final class MapArtChunkRenderer {
 
     private MapArtSet boundSet;
     private String boundSafeProject = "";
+    // Bumped on every project switch; queued/in-flight jobs from the previous project
+    // check it and abort cheaply instead of burning disk reads nobody will display.
+    private int buildGeneration;
     private int boundVersion = -1;
     private long frameCounter;
     private int registeredFullCount = 0;
@@ -205,9 +208,12 @@ public final class MapArtChunkRenderer {
         if (set != boundSet) {
             // Same project, new set object (every scan rebuilds sets): keep the chunk
             // textures - their stable ids re-register in place, so content refreshes
-            // without a placeholder flash. Only a real project switch releases everything.
+            // without a placeholder flash. Only a real project switch releases everything
+            // and invalidates queued builds of the old project.
             String safe = MapArtCache.sanitizeProjectId(set.getProjectId());
             if (!safe.equals(boundSafeProject)) {
+                buildGeneration++;
+                queued.clear();
                 releaseAll();
             }
             boundSet = set;
@@ -307,8 +313,15 @@ public final class MapArtChunkRenderer {
         };
 
         BuildJob job = new BuildJob(key, cr, cc, tilesW, tilesH, present, colorSource,
-            boundSafeProject, boundVersion, needFull);
+            boundSafeProject, boundVersion, needFull, buildGeneration);
         executor.submit(() -> {
+            // A project switch while this job sat queued: drop it instead of doing the
+            // (expensive, disk-reading) work for a project nobody is viewing.
+            if (job.generation() != buildGeneration) {
+                completed.offer(new BuildResult(job.key(), job.chunkRow(), job.chunkCol(),
+                    job.safeProject(), job.version(), null, null, true));
+                return;
+            }
             try {
                 completed.offer(buildChunk(job));
             } catch (Throwable error) {

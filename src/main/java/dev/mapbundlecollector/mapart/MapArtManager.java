@@ -31,6 +31,8 @@ public final class MapArtManager {
     private final List<MapArtSet> projectSets = new ArrayList<>();
     private int currentProjectIndex = 0;
     private MapArtSet activeSet;
+    // Id of the project the user is actually viewing; survives re-sorts and rebuilds.
+    private String activeProjectId;
 
     // Nullable when the cache could not be opened; everything degrades gracefully without it.
     private MapArtCache cache;
@@ -344,15 +346,43 @@ public final class MapArtManager {
     }
 
     private void refreshActiveSet() {
+        // The active project is STICKY by id: rebuilds re-sort sets by size every scan, and
+        // an index-only selection would silently jump to the biggest project (with many
+        // cached projects the 18k-tile one would always win, burying the small map the
+        // user is actually looking at).
+        if (activeProjectId != null) {
+            for (int i = 0; i < projectSets.size(); i++) {
+                if (projectSets.get(i).getProjectId().equalsIgnoreCase(activeProjectId)) {
+                    currentProjectIndex = i;
+                    activeSet = projectSets.get(i);
+                    return;
+                }
+            }
+        }
+        // No (or a vanished) previous selection: prefer a project with LIVE inventory
+        // tiles over the biggest cached one, else keep the current index.
+        for (MapArtSet set : projectSets) {
+            for (MapTile tile : set.getTiles().values()) {
+                if (tile.isLive()) {
+                    activeProjectId = set.getProjectId();
+                    currentProjectIndex = projectSets.indexOf(set);
+                    activeSet = set;
+                    return;
+                }
+            }
+        }
+        activeProjectId = activeSet == null ? null : activeSet.getProjectId();
         if (currentProjectIndex >= projectSets.size()) currentProjectIndex = 0;
         if (currentProjectIndex < 0) currentProjectIndex = 0;
         activeSet = projectSets.isEmpty() ? null : projectSets.get(currentProjectIndex);
+        if (activeSet != null) activeProjectId = activeSet.getProjectId();
     }
 
     public void nextProject() {
         if (projectSets.isEmpty()) return;
         currentProjectIndex = (currentProjectIndex + 1) % projectSets.size();
         activeSet = projectSets.get(currentProjectIndex);
+        activeProjectId = activeSet.getProjectId();
         dataVersion++;
     }
 
@@ -360,6 +390,7 @@ public final class MapArtManager {
         if (projectSets.isEmpty()) return;
         currentProjectIndex = (currentProjectIndex - 1 + projectSets.size()) % projectSets.size();
         activeSet = projectSets.get(currentProjectIndex);
+        activeProjectId = activeSet.getProjectId();
         dataVersion++;
     }
 
@@ -437,6 +468,7 @@ public final class MapArtManager {
     // Memory only; the disk cache is never touched here.
     public void clear() {
         activeSet = null;
+        activeProjectId = null;
         projectSets.clear();
         currentProjectIndex = 0;
         scannedOnce = false;
