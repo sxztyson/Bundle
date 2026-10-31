@@ -12,6 +12,10 @@ public final class MapNameParser {
     private static final Pattern PATTERN_GRID = Pattern.compile("^(.+?)[_\\-\\s,.\\[\\(]+(\\d+)[_\\-\\s,.xX]+(\\d+)[_\\]\\)]*(?:\\.[a-zA-Z0-9]+)?$");
     // Fallback 1D index: MyMap_1.nbt, MyMap 4, Art #2, MyMap.4
     private static final Pattern PATTERN_1D = Pattern.compile("^(.+?)[_\\-\\s.#\\[\\(]+(\\d+)[_\\]\\)]*(?:\\.[a-zA-Z0-9]+)?$");
+    // Concatenated coordinates with NO separator before the first number: MonaLisa3.7,
+    // vulcan12_4, nameX_Y. Tried only AFTER the strict grid (which keeps digit-containing
+    // projects like Map22_3_7 and sun_25x30.3.7 parsing correctly).
+    private static final Pattern PATTERN_GRID_CONCAT = Pattern.compile("^(.+?)(\\d+)[_\\-\\s,.xX]+(\\d+)[_\\]\\)]*(?:\\.[a-zA-Z0-9]+)?$");
     // Spreadsheet-style grid: Winter 5x5 A1 .. E5, Art B3, Collage c2, Art.B3. The letter
     // is the ROW (A = first row), the 1-based number is the COLUMN - the reading order of
     // stamp-style mapart pieces.
@@ -34,6 +38,16 @@ public final class MapNameParser {
             String project = gridMatcher.group(1).trim();
             int num1 = Integer.parseInt(gridMatcher.group(2));
             int num2 = Integer.parseInt(gridMatcher.group(3));
+            int col = xyFirst ? num1 : num2;
+            int row = xyFirst ? num2 : num1;
+            return new ParsedTile(project, row, col, name);
+        }
+
+        Matcher concatMatcher = PATTERN_GRID_CONCAT.matcher(name);
+        if (concatMatcher.matches()) {
+            String project = concatMatcher.group(1).trim();
+            int num1 = Integer.parseInt(concatMatcher.group(2));
+            int num2 = Integer.parseInt(concatMatcher.group(3));
             int col = xyFirst ? num1 : num2;
             int row = xyFirst ? num2 : num1;
             return new ParsedTile(project, row, col, name);
