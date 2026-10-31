@@ -34,6 +34,12 @@ public final class MapArtManager {
     // Id of the project the user is actually viewing; survives re-sorts and rebuilds.
     private String activeProjectId;
 
+    // Projects hidden from the view by Clear (this session only): the disk cache stays
+    // intact (only Del Cache deletes), but cached projects are NOT re-added to the view
+    // until their maps show up in the inventory again or the game restarts. Without this,
+    // Clear was a no-op whenever persistent-cache rebuilt every project from disk.
+    private final java.util.Set<String> sessionHiddenProjects = new java.util.HashSet<>();
+
     // Nullable when the cache could not be opened; everything degrades gracefully without it.
     private MapArtCache cache;
     // Incremented on ANY content change; the chunk renderer uses it as its invalidation signal.
@@ -211,7 +217,13 @@ public final class MapArtManager {
             // list is what makes cached maparts (e.g. a finished project living in chests)
             // appear in the side panel after a toggle or restart.
             for (ProjectCache project : cache.allProjects()) {
-                if (rescanned.contains(project.getProjectId().toLowerCase(Locale.ROOT))) continue;
+                String id = project.getProjectId().toLowerCase(Locale.ROOT);
+                if (rescanned.contains(id)) {
+                    // Live maps in the inventory again: un-hide.
+                    sessionHiddenProjects.remove(id);
+                    continue;
+                }
+                if (sessionHiddenProjects.contains(id)) continue;
                 if (project.tileCount() > 0) next.add(cacheOnlySet(project));
             }
         } else {
@@ -444,6 +456,7 @@ public final class MapArtManager {
     public boolean deleteActiveProjectCache() {
         if (cache == null || activeSet == null) return false;
         cache.deleteProject(activeSet.getProjectId());
+        sessionHiddenProjects.remove(activeSet.getProjectId().toLowerCase(Locale.ROOT));
         projectSets.remove(activeSet);
         refreshActiveSet();
         scannedOnce = false; // force a rescan so disk-backed tiles disappear immediately
@@ -467,6 +480,9 @@ public final class MapArtManager {
 
     // Memory only; the disk cache is never touched here.
     public void clear() {
+        for (MapArtSet set : projectSets) {
+            sessionHiddenProjects.add(set.getProjectId().toLowerCase(Locale.ROOT));
+        }
         activeSet = null;
         activeProjectId = null;
         projectSets.clear();

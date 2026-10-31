@@ -139,7 +139,7 @@ public final class MapArtViewerModule extends Module {
     public void clearLoaded() {
         MapArtManager.get().clear();
         if (persistentCache.get()) {
-            MapArtUi.chat("§c[Map Art]§r Cleared loaded maps from memory (disk cache kept; use Del Cache to remove it).");
+            MapArtUi.chat("§c[Map Art]§r View cleared - cached projects stay hidden until their maps return to your inventory (or restart). Disk cache untouched; Del Cache deletes the viewed project.");
         } else {
             MapArtUi.chat("§c[Map Art]§r Cleared all loaded maps from memory.");
         }
