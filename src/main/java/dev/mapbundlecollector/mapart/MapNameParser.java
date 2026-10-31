@@ -20,6 +20,13 @@ public final class MapNameParser {
     // is the ROW (A = first row), the 1-based number is the COLUMN - the reading order of
     // stamp-style mapart pieces.
     private static final Pattern PATTERN_LETTER_GRID = Pattern.compile("^(.+?)[_\\-\\s,.]+([A-Za-z])[ _]?(\\d{1,2})[_\\]\\)]*(?:\\.[a-zA-Z0-9]+)?$");
+    // Coordinates FIRST with the name at the end: 3_7_sun, 3.7.MonaLisa, 3 7 Mona Lisa,
+    // 3_7MonaLisa, (3_7)_name, (3.7)name. Tried after every name-first form so digit-
+    // containing projects and dims-prefixed names keep their existing parsing.
+    private static final Pattern PATTERN_LEADING_GRID = Pattern.compile("^\\(?(\\d+)[_\\-\\s,.xX]+(\\d+)\\)?[_\\-\\s,.]*(.+?)[_\\]\\)]*(?:\\.[a-zA-Z0-9]+)?$");
+    // Letter coordinates first: A1_Winter, B3.sun, A1 Winter (a separator before the name
+    // is REQUIRED here - a glued A1Winter stays a plain project name).
+    private static final Pattern PATTERN_LEADING_LETTER = Pattern.compile("^\\(?([A-Za-z])[ _]?(\\d{1,2})\\)?[_\\-\\s,.]+(.+?)$");
 
     public record ParsedTile(String projectId, int row, int col, String rawName) {}
 
@@ -66,6 +73,28 @@ public final class MapNameParser {
             int col = Integer.parseInt(letterMatcher.group(3)) - 1;
             if (row >= 0 && row < 26 && col >= 0) {
                 return new ParsedTile(letterMatcher.group(1).trim(), row, col, name);
+            }
+        }
+
+        Matcher leadingMatcher = PATTERN_LEADING_GRID.matcher(name);
+        if (leadingMatcher.matches()) {
+            String project = leadingMatcher.group(3).trim();
+            int num1 = Integer.parseInt(leadingMatcher.group(1));
+            int num2 = Integer.parseInt(leadingMatcher.group(2));
+            if (!project.isEmpty()) {
+                int col = xyFirst ? num1 : num2;
+                int row = xyFirst ? num2 : num1;
+                return new ParsedTile(project, row, col, name);
+            }
+        }
+
+        Matcher leadingLetterMatcher = PATTERN_LEADING_LETTER.matcher(name);
+        if (leadingLetterMatcher.matches()) {
+            int row = Character.toUpperCase(leadingLetterMatcher.group(1).charAt(0)) - 'A';
+            int col = Integer.parseInt(leadingLetterMatcher.group(2)) - 1;
+            String project = leadingLetterMatcher.group(3).trim();
+            if (row >= 0 && row < 26 && col >= 0 && !project.isEmpty()) {
+                return new ParsedTile(project, row, col, name);
             }
         }
 
