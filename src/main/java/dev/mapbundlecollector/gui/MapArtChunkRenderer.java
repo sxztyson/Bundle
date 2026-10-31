@@ -36,7 +36,14 @@ public final class MapArtChunkRenderer {
 
     public static final int CHUNK_TILES = 16;
     private static final int MINI_TILE_PX = 8;
-    private static final int FULL_TIER_MIN_TILE_PX = 16;
+    // Medium tier: 32x32 px per tile (~1MB per chunk). Bridges the quality cliff between
+    // the mini tier (8px/tile) and full-res (16MB/chunk): at mid zoom more chunks are
+    // visible than the full-res VRAM budget allows, which used to drop the view to the
+    // mini tier - visible as big pixel blocks.
+    private static final int MED_TILE_PX = 32;
+    private static final int MED_TIER_MIN_TILE_PX = 10;
+    private static final int FULL_TIER_MIN_TILE_PX = 40;
+    private static final int MAX_MED_CHUNKS = 128;
     private static final int PLACEHOLDER_COLOR = 0xFF14161C;
     private static final String NAMESPACE = "mapbundlecollector";
 
@@ -56,17 +63,21 @@ public final class MapArtChunkRenderer {
 
     private record BuildResult(
         long key, int chunkRow, int chunkCol, String safeProject, int version,
-        NativeImage full, NativeImage mini, boolean failed) {}
+        NativeImage full, NativeImage med, NativeImage mini, boolean failed) {}
 
     private static final class ChunkEntry {
         Identifier fullId;
+        Identifier medId;
         Identifier miniId;
         int fullW;
         int fullH;
+        int medW;
+        int medH;
         int miniW;
         int miniH;
-        // Per-tier freshness: a mini-only refresh must not mark a stale full texture fresh.
+        // Per-tier freshness: a lower-tier refresh must not mark a stale higher tier fresh.
         int fullVersion = -1;
+        int medVersion = -1;
         int miniVersion = -1;
         long lastUsedFrame;
     }
@@ -85,6 +96,7 @@ public final class MapArtChunkRenderer {
     private int boundVersion = -1;
     private long frameCounter;
     private int registeredFullCount = 0;
+    private int registeredMedCount = 0;
     private int maxFullResChunks = 12;
 
     public static MapArtChunkRenderer get() {
@@ -140,16 +152,18 @@ public final class MapArtChunkRenderer {
         int firstRow = clampChunk((int) Math.floor((clipY1 - panY) * invZoom / chunkPx), chunkRows);
         int lastRow = clampChunk((int) Math.ceil((clipY2 - panY) * invZoom / chunkPx), chunkRows);
 
-        // Full-res tier only while the visible window fits the VRAM budget; otherwise the
-        // mini tier covers the whole canvas. Without this, a mid-zoom showing more chunks
-        // than the budget would evict + rebuild them endlessly (churn).
+        // Tier ladder by on-screen tile size and VRAM budget: full-res only while the
+        // visible window fits the budget (otherwise it would evict+rebuild endlessly);
+        // the MEDIUM tier covers everything between mini and full so mid-zoom never shows
+        // 8-px-per-tile blocks (med chunks are ~1MB, capped well below full-res cost).
         int visibleChunks = (lastRow - firstRow + 1) * (lastCol - firstCol + 1);
-        boolean fullTier = MapArtSet.TILE_PIXELS * zoom >= FULL_TIER_MIN_TILE_PX
-            && visibleChunks <= maxFullResChunks;
+        float tilePx = MapArtSet.TILE_PIXELS * zoom;
+        boolean fullTier = tilePx >= FULL_TIER_MIN_TILE_PX && visibleChunks <= maxFullResChunks;
+        boolean medTier = !fullTier && tilePx >= MED_TIER_MIN_TILE_PX;
 
         for (int cr = firstRow; cr <= lastRow; cr++) {
             for (int cc = firstCol; cc <= lastCol; cc++) {
-                drawChunk(ctx, set, cr, cc, panX, panY, zoom, fullTier, frame,
+                drawChunk(ctx, set, cr, cc, panX, panY, zoom, fullTier, medTier, frame,
                     clipX1, clipY1, clipX2, clipY2);
             }
         }
@@ -157,7 +171,7 @@ public final class MapArtChunkRenderer {
     }
 
     private void drawChunk(GuiGraphicsExtractor ctx, MapArtSet set, int cr, int cc,
-        float panX, float panY, float zoom, boolean fullTier, long frame,
+        float panX, float panY, float zoom, boolean fullTier, boolean medTier, long frame,
         int clipX1, int clipY1, int clipX2, int clipY2) {
         long key = chunkKey(cr, cc);
         ChunkEntry entry = chunks.computeIfAbsent(key, k -> new ChunkEntry());
@@ -173,8 +187,10 @@ public final class MapArtChunkRenderer {
         if (sx >= clipX2 || sy >= clipY2 || sx + sw <= clipX1 || sy + sh <= clipY1) return;
 
         boolean fullStale = fullTier && (entry.fullId == null || entry.fullVersion != boundVersion);
-        boolean miniStale = entry.miniId == null || entry.miniVersion != boundVersion;
-        if (fullStale || (miniStale && !fullTier)) {
+        boolean medStale = medTier && (entry.medId == null || entry.medVersion != boundVersion);
+        boolean miniStale = !fullTier && !medTier
+            && (entry.miniId == null || entry.miniVersion != boundVersion);
+        if (fullStale || medStale || miniStale) {
             queueBuild(set, cr, cc, key, tilesW, tilesH, fullTier);
         }
 
@@ -186,8 +202,18 @@ public final class MapArtChunkRenderer {
             srcW = entry.fullW;
             srcH = entry.fullH;
             entry.lastUsedFrame = frame;
+        } else if (medTier && entry.medId != null) {
+            // Full tier still building (or over budget): the medium tier keeps mid-zoom
+            // sharp instead of dropping to 8-px blocks.
+            id = entry.medId;
+            srcW = entry.medW;
+            srcH = entry.medH;
+            entry.lastUsedFrame = frame;
+        } else if (entry.medId != null) {
+            id = entry.medId;
+            srcW = entry.medW;
+            srcH = entry.medH;
         } else if (entry.miniId != null) {
-            // Full tier still building (or evicted): fall back to the mini texture.
             id = entry.miniId;
             srcW = entry.miniW;
             srcH = entry.miniH;
@@ -250,6 +276,11 @@ public final class MapArtChunkRenderer {
             entry.fullId = null;
             registeredFullCount--;
         }
+        if (entry.medId != null) {
+            mc.getTextureManager().release(entry.medId);
+            entry.medId = null;
+            registeredMedCount--;
+        }
         if (entry.miniId != null) {
             mc.getTextureManager().release(entry.miniId);
             entry.miniId = null;
@@ -269,6 +300,19 @@ public final class MapArtChunkRenderer {
             Minecraft.getInstance().getTextureManager().release(victim.fullId);
             victim.fullId = null;
             registeredFullCount--;
+        }
+        while (registeredMedCount > MAX_MED_CHUNKS) {
+            ChunkEntry victim = null;
+            for (ChunkEntry entry : chunks.values()) {
+                if (entry.medId == null) continue;
+                if (victim == null || entry.lastUsedFrame < victim.lastUsedFrame) {
+                    victim = entry;
+                }
+            }
+            if (victim == null) break;
+            Minecraft.getInstance().getTextureManager().release(victim.medId);
+            victim.medId = null;
+            registeredMedCount--;
         }
     }
 
@@ -319,14 +363,14 @@ public final class MapArtChunkRenderer {
             // (expensive, disk-reading) work for a project nobody is viewing.
             if (job.generation() != buildGeneration) {
                 completed.offer(new BuildResult(job.key(), job.chunkRow(), job.chunkCol(),
-                    job.safeProject(), job.version(), null, null, true));
+                    job.safeProject(), job.version(), null, null, null, true));
                 return;
             }
             try {
                 completed.offer(buildChunk(job));
             } catch (Throwable error) {
                 completed.offer(new BuildResult(job.key(), job.chunkRow(), job.chunkCol(),
-                    job.safeProject(), job.version(), null, null, true));
+                    job.safeProject(), job.version(), null, null, null, true));
             }
         });
     }
@@ -354,6 +398,20 @@ public final class MapArtChunkRenderer {
             }
         }
 
+        // Medium tier is ALWAYS built (cheap, ~1MB): downsampling from full when present
+        // keeps one color-source pass; otherwise it samples the source directly.
+        NativeImage med = new NativeImage(job.tilesW() * MED_TILE_PX, job.tilesH() * MED_TILE_PX, false);
+        if (full != null) {
+            int medStride = MapArtSet.TILE_PIXELS / MED_TILE_PX;
+            for (int y = 0; y < med.getHeight(); y++) {
+                for (int x = 0; x < med.getWidth(); x++) {
+                    med.setPixel(x, y, full.getPixel(x * medStride, y * medStride));
+                }
+            }
+        } else {
+            paintScaledChunk(med, job, MED_TILE_PX);
+        }
+
         NativeImage mini = new NativeImage(job.tilesW() * MINI_TILE_PX, job.tilesH() * MINI_TILE_PX, false);
         if (full != null) {
             // Full tier available: downsample from it (single color-source pass).
@@ -363,11 +421,16 @@ public final class MapArtChunkRenderer {
                     mini.setPixel(x, y, full.getPixel(x * stride, y * stride));
                 }
             }
-        } else {
-            paintMiniChunk(mini, job);
+        } else if (med != null) {
+            int stride = MED_TILE_PX / MINI_TILE_PX;
+            for (int y = 0; y < mini.getHeight(); y++) {
+                for (int x = 0; x < mini.getWidth(); x++) {
+                    mini.setPixel(x, y, med.getPixel(x * stride, y * stride));
+                }
+            }
         }
         return new BuildResult(job.key(), job.chunkRow(), job.chunkCol(),
-            job.safeProject(), job.version(), full, mini, false);
+            job.safeProject(), job.version(), full, med, mini, false);
     }
 
     private static byte[] tileColors(BuildJob job, int row, int col) {
@@ -382,24 +445,24 @@ public final class MapArtChunkRenderer {
         return colors != null && colors.length >= MapArtCache.COLOR_BYTES && !MapArtCache.isBlank(colors);
     }
 
-    // Mini tier without the full image: sample one color per 16x16 block straight from
-    // the color source (8x8 px per tile; absent tiles get a dithered checker).
-    private static void paintMiniChunk(NativeImage mini, BuildJob job) {
+    // Scaled tier without the full image (e.g. medium built directly): sample one source
+    // color per block straight from the color source; absent tiles get a dithered checker.
+    private static void paintScaledChunk(NativeImage image, BuildJob job, int tilePx) {
         int row0 = job.chunkRow() * CHUNK_TILES;
         int col0 = job.chunkCol() * CHUNK_TILES;
-        int stride = MapArtSet.TILE_PIXELS / MINI_TILE_PX;
-        for (int y = 0; y < mini.getHeight(); y++) {
-            for (int x = 0; x < mini.getWidth(); x++) {
+        int stride = MapArtSet.TILE_PIXELS / tilePx;
+        for (int y = 0; y < image.getHeight(); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
                 int argb;
-                byte[] colors = tileColors(job, row0 + y / MINI_TILE_PX, col0 + x / MINI_TILE_PX);
+                byte[] colors = tileColors(job, row0 + y / tilePx, col0 + x / tilePx);
                 if (colors != null) {
-                    int px = (x % MINI_TILE_PX) * stride;
-                    int py = (y % MINI_TILE_PX) * stride;
+                    int px = (x % tilePx) * stride;
+                    int py = (y % tilePx) * stride;
                     argb = MapColor.getColorFromPackedId(colors[px + py * MapArtSet.TILE_PIXELS] & 0xFF);
                 } else {
                     argb = ((x + y) % 2 == 0) ? 0xFF1E2128 : 0xFF272B34;
                 }
-                mini.setPixel(x, y, argb);
+                image.setPixel(x, y, argb);
             }
         }
     }
@@ -442,6 +505,7 @@ public final class MapArtChunkRenderer {
         if (result.failed()) return; // build failed; visible chunks re-queue next frame
         if (!result.safeProject().equals(boundSafeProject)) {
             if (result.full() != null) result.full().close();
+            if (result.med() != null) result.med().close();
             if (result.mini() != null) result.mini().close();
             return;
         }
@@ -452,8 +516,20 @@ public final class MapArtChunkRenderer {
         // DynamicTexture uploads to the GPU in its constructor -> render thread only.
         // register() under a stable id auto-closes the previous texture, so re-registering
         // is the whole refresh path.
+        if (result.med() != null) {
+            Identifier medId = chunkId(result.safeProject(), result.chunkRow(), result.chunkCol(), Tier.MED);
+            DynamicTexture medTexture = new DynamicTexture(
+                () -> "mbc_chunk_med_" + result.safeProject() + "_" + result.chunkRow() + "_" + result.chunkCol(),
+                result.med());
+            mc.getTextureManager().register(medId, medTexture);
+            if (entry.medId == null) registeredMedCount++;
+            entry.medId = medId;
+            entry.medW = result.med().getWidth();
+            entry.medH = result.med().getHeight();
+            entry.medVersion = result.version();
+        }
         if (result.mini() != null) {
-            Identifier miniId = chunkId(result.safeProject(), result.chunkRow(), result.chunkCol(), true);
+            Identifier miniId = chunkId(result.safeProject(), result.chunkRow(), result.chunkCol(), Tier.MINI);
             DynamicTexture miniTexture = new DynamicTexture(
                 () -> "mbc_chunk_mini_" + result.safeProject() + "_" + result.chunkRow() + "_" + result.chunkCol(),
                 result.mini());
@@ -464,7 +540,7 @@ public final class MapArtChunkRenderer {
             entry.miniVersion = result.version();
         }
         if (result.full() != null) {
-            Identifier fullId = chunkId(result.safeProject(), result.chunkRow(), result.chunkCol(), false);
+            Identifier fullId = chunkId(result.safeProject(), result.chunkRow(), result.chunkCol(), Tier.FULL);
             DynamicTexture fullTexture = new DynamicTexture(
                 () -> "mbc_chunk_" + result.safeProject() + "_" + result.chunkRow() + "_" + result.chunkCol(),
                 result.full());
@@ -486,6 +562,7 @@ public final class MapArtChunkRenderer {
         BuildResult result;
         while ((result = completed.poll()) != null) {
             if (result.full() != null) result.full().close();
+            if (result.med() != null) result.med().close();
             if (result.mini() != null) result.mini().close();
         }
         queued.clear();
@@ -495,8 +572,15 @@ public final class MapArtChunkRenderer {
         boundVersion = -1;
     }
 
-    private static Identifier chunkId(String safeProject, int chunkRow, int chunkCol, boolean mini) {
-        String path = "chunk/" + safeProject + "_" + chunkRow + "_" + chunkCol + (mini ? "_mini" : "");
+    private enum Tier {FULL, MED, MINI}
+
+    private static Identifier chunkId(String safeProject, int chunkRow, int chunkCol, Tier tier) {
+        String suffix = switch (tier) {
+            case FULL -> "";
+            case MED -> "_med";
+            case MINI -> "_mini";
+        };
+        String path = "chunk/" + safeProject + "_" + chunkRow + "_" + chunkCol + suffix;
         return Identifier.fromNamespaceAndPath(NAMESPACE, path);
     }
 
