@@ -81,11 +81,52 @@ public final class MapArtManager {
             cache = null;
             return;
         }
+        migrateLegacyCaches();
         for (ProjectCache project : cache.allProjects()) {
             projectSets.add(cacheOnlySet(project));
         }
         if (!projectSets.isEmpty()) {
             dataVersion++;
+        }
+    }
+
+    // One-time re-index: caches written before letter-grid support stored pieces named like
+    // "Winter 5x5 A1" as their own 1x1 projects. Re-parse every stored tile name and move
+    // tiles (presence + colors) to the grid project and coordinates they actually belong
+    // to, deleting the emptied stub projects. Idempotent: after a pass every tile parses to
+    // exactly where it sits, so subsequent launches do nothing.
+    private void migrateLegacyCaches() {
+        int movedProjects = 0;
+        int movedTiles = 0;
+        for (ProjectCache project : new ArrayList<>(cache.allProjects())) {
+            int total = project.getTiles().size();
+            if (total == 0) continue;
+            int moved = 0;
+            for (CachedTileInfo tile : new ArrayList<>(project.getTiles().values())) {
+                MapNameParser.ParsedTile parsed = MapNameParser.parse(tile.name, true);
+                if (parsed == null) continue;
+                boolean samePlace = parsed.projectId().equalsIgnoreCase(project.getProjectId())
+                    && parsed.row() == tile.row && parsed.col() == tile.col;
+                if (samePlace) continue;
+                byte[] colors = cache.readColors(project.getProjectId(), tile.row, tile.col);
+                cache.putTile(parsed.projectId(), parsed.row(), parsed.col(), tile.name, tile.mapId);
+                if (colors != null) {
+                    cache.putColors(parsed.projectId(), parsed.row(), parsed.col(), colors);
+                }
+                moved++;
+            }
+            if (moved > 0) {
+                movedTiles += moved;
+                if (moved == total) {
+                    cache.deleteProject(project.getProjectId());
+                    movedProjects++;
+                }
+            }
+        }
+        if (movedTiles > 0) {
+            cache.flushSync();
+            System.out.println("[MapBundleCollector] migrated " + movedTiles + " cached tile(s) from "
+                + movedProjects + " legacy per-piece project(s) into their grid projects");
         }
     }
 
